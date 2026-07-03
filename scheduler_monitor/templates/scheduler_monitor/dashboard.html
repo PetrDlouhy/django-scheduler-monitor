@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduler Monitor</title>
+<link href="https://unpkg.com/vis-timeline@7.7.3/styles/vis-timeline-graph2d.min.css" rel="stylesheet">
+<script src="https://unpkg.com/vis-timeline@7.7.3/standalone/umd/vis-timeline-graph2d.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2027; --panel2:#222b34; --line:#2c3743;
+    --txt:#e6edf3; --muted:#8b98a5; --accent:#4493f8;
+    --ok:#2ea043; --fail:#f85149; --oom:#a371f7; --timeout:#d29922; --run:#ff4da6; --crash:#bd561d; --unknown:#6e7681;
+    --stopped:#6b7fd7;
+    --labelw:260px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--txt)}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:14px}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .meta{color:var(--muted);font-size:12px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;
+       padding:5px 12px;font-size:13px;cursor:pointer}
+  .btn:hover{border-color:var(--accent)} .btn:disabled{opacity:.5;cursor:default}
+  header .status{color:var(--accent);font-size:12px;margin-left:auto}
+  .tiles{display:flex;gap:10px;flex-wrap:wrap;padding:14px 20px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:92px}
+  .tile .n{font-size:22px;font-weight:650}
+  .tile .l{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .tile.ok .n{color:var(--ok)} .tile.fail .n{color:var(--fail)} .tile.oom .n{color:var(--oom)}
+  .tile.timeout .n{color:var(--timeout)} .tile.run .n{color:var(--run)}
+  .filters{display:flex;gap:16px;flex-wrap:wrap;align-items:center;padding:6px 20px 12px}
+  .filters>div{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .filters .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+  .filters input[type=text],.filters select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+       border-radius:6px;padding:6px 9px;font-size:13px}
+  .filters input[type=text]{min-width:230px}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--line);
+       padding:5px 9px;border-radius:14px;cursor:pointer;user-select:none;font-size:12px;opacity:.5}
+  .chip.on{opacity:1;border-color:#3b4855}
+  .chip input{display:none}
+  .chip .dot{width:9px;height:9px;border-radius:50%}
+  .legendwrap{padding:6px 20px 10px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
+  #tlwrap{position:relative;margin:0 16px}
+  #timeline{border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+  /* draggable divider for the job-label column */
+  #labelresizer{position:absolute;top:0;bottom:0;width:9px;margin-left:-4px;cursor:col-resize;z-index:5}
+  #labelresizer::after{content:"";position:absolute;left:4px;top:0;bottom:0;width:1px;background:var(--line)}
+  #labelresizer:hover::after,#labelresizer.drag::after{background:var(--accent);width:2px}
+  .vis-labelset .vis-label .vis-inner{display:block;max-width:var(--labelw);overflow:hidden;
+       text-overflow:ellipsis;white-space:nowrap}
+  .vis-item{border-radius:3px;border-width:1px;font-size:11px;color:#fff}
+  .vis-item.success{background:var(--ok);border-color:#3fb950}
+  .vis-item.failed{background:var(--fail);border-color:#ff7b72}
+  .vis-item.oom_killed{background:var(--oom);border-color:#bc8cff}
+  .vis-item.timed_out{background:var(--timeout);border-color:#e3b341}
+  .vis-item.running{background:var(--run);border-color:#ff8cc8}
+  .vis-item.crashed{background:var(--crash);border-color:#ec775c}
+  .vis-item.unknown{background:var(--unknown);border-color:#8b949e}
+  .vis-item.ended{background:var(--unknown);border-color:#8b949e}
+  .vis-item.stopped{background:var(--stopped);border-color:#8b9be5}
+  .vis-item:hover{filter:brightness(1.4)}
+  /* opened run's lane (blue) */
+  #timeline .vis-labelset .vis-label.lanesel{background:rgba(51,177,255,.18)}
+  #timeline .vis-labelset .vis-label.lanesel .vis-inner{color:#cfe8ff}
+  #timeline .vis-foreground .vis-group.lanesel{background:rgba(51,177,255,.07)}
+  /* hovered lane (white) */
+  #timeline .vis-labelset .vis-label.lanehover{background:rgba(255,255,255,.14)}
+  #timeline .vis-labelset .vis-label.lanehover .vis-inner{color:#fff}
+  #timeline .vis-foreground .vis-group.lanehover{background:rgba(255,255,255,.055)}
+  .vis-item.memhot{box-shadow:0 0 0 2px #ffd33d inset}
+  .vis-item.downscale{box-shadow:0 0 0 2px #33b1ff inset}
+  .vis-item.vis-selected{box-shadow:0 0 0 2px #fff inset}
+  .vis-tooltip{background:#0d1117 !important;border:1px solid var(--line) !important;color:var(--txt) !important;
+       border-radius:8px !important;padding:0 !important;box-shadow:0 8px 24px rgba(0,0,0,.5) !important;font-size:12px !important}
+  .tt{padding:10px 12px;min-width:240px}
+  .tt h4{margin:0 0 6px;font-size:13px}
+  .tt .cmd{color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:11px;word-break:break-all;margin-bottom:8px}
+  .tt table{border-collapse:collapse;width:100%}
+  .tt td{padding:2px 0;vertical-align:top} .tt td.k{color:var(--muted);padding-right:12px;white-space:nowrap}
+  .bar{height:6px;background:#30363d;border-radius:3px;overflow:hidden;margin-top:3px}
+  .bar>i{display:block;height:100%;background:var(--accent)}
+  .vis-time-axis .vis-text,.vis-labelset .vis-label{color:var(--muted)}
+  .vis-panel{border-color:var(--line) !important}
+  .vis-item .vis-item-content .args{color:rgba(255,255,255,.7);font-weight:400}
+  .vis-labelset .args{color:var(--muted)}
+  /* detail panel */
+  #detail{margin:14px 16px 30px;border:1px solid var(--line);border-radius:8px;background:var(--panel);
+       padding:14px 16px;min-height:60px;display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+  #slowq{flex-basis:100%;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+  #slowq .title{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+  #slowq .caveat{color:var(--timeout);font-size:11px;margin-bottom:8px}
+  #slowq table{border-collapse:collapse;width:100%;font-size:12px}
+  #slowq td{padding:3px 8px 3px 0;vertical-align:top;border-bottom:1px solid #20272f}
+  #slowq td.dur{white-space:nowrap;color:var(--fail);font-variant-numeric:tabular-nums;font-weight:600}
+  #slowq td.app{white-space:nowrap;color:var(--muted)}
+  #slowq td.sql{font-family:ui-monospace,Menlo,monospace;color:var(--txt);width:100%}
+  #slowq td.sql .sqltext{cursor:pointer;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;
+       -webkit-box-orient:vertical;overflow:hidden}
+  #slowq td.sql .sqltext:hover{color:#fff}
+  #slowq td.sql .sqltext.expanded{display:block;-webkit-line-clamp:none;white-space:pre-wrap;
+       overflow:visible;background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:2px 0}
+  /* log/SQL overlay: backdrop (click to close) + panel offset from the left */
+  #logmodal{position:fixed;inset:0;z-index:1000;background:rgba(6,9,12,.55)}
+  #logpanel{position:absolute;left:200px;right:0;top:0;bottom:0;background:rgba(10,14,19,.99);
+       border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.5)}
+  .logmodal-head{display:flex;align-items:center;gap:16px;padding:11px 20px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  #logtitle{font-size:13px;color:var(--txt);font-family:ui-monospace,Menlo,monospace;font-weight:600;word-break:break-all}
+  #loghint{color:var(--muted);font-size:11px}
+  #streamfilters{margin-left:auto;display:flex;gap:6px;flex:0 0 auto}
+  #logclose{flex:0 0 auto}
+  /* top: scrollable timestamped list of log lines / SQLs */
+  #modallist{flex:1 1 auto;overflow:auto;padding:6px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5}
+  .logitem{padding:2px 20px;cursor:pointer;white-space:pre-wrap;word-break:break-all;border-left:3px solid transparent}
+  .logitem:hover{background:rgba(255,255,255,.09);border-left-color:rgba(255,255,255,.35)}
+  .logitem.sel{background:rgba(51,177,255,.15);border-left-color:#33b1ff}
+  .logitem.sel:hover{background:rgba(51,177,255,.22)}
+  .logitem .ts{color:var(--muted);margin-right:10px}
+  .logitem.sql{background:rgba(51,177,255,.07);border-left-color:#33b1ff33}
+  .logitem.sql .qdur{color:#5cc0ff;margin-right:10px;font-weight:600}
+  .logitem.sql.sel{border-left-color:#33b1ff}
+  #modallist.hide-log .logitem.log{display:none}
+  #modallist.hide-sql .logitem.sql{display:none}
+  /* bottom: memory + load charts with a movable time marker */
+  #modalcharts{flex:0 0 auto;border-top:1px solid var(--line);padding:6px 20px 10px;background:#0d1117;
+       display:flex;gap:18px}
+  #modalcharts .mchart{flex:1 1 0;min-width:0}
+  #modalcharts .title{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+  #modalcharts svg{height:120px}
+  #modalcharts svg text{fill:var(--muted);font-size:10px}
+  /* lane-grouping (merge/split) modal */
+  #mergemodal{position:fixed;inset:0;z-index:1001;background:rgba(6,9,12,.55)}
+  #mergepanel{position:absolute;left:200px;right:0;top:0;bottom:0;background:rgba(10,14,19,.99);
+       border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.5)}
+  #loghint2{color:var(--muted);font-size:11px}
+  #mergebody{flex:1 1 auto;overflow:auto;padding:8px 0;font-size:13px}
+  .lanerow{display:flex;align-items:center;gap:10px;padding:4px 20px}
+  .lanerow:hover{background:rgba(255,255,255,.05)}
+  .lanerow .lname{font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+  .lanerow .lmeta{color:var(--muted);font-size:11px;white-space:nowrap}
+  .lanerow .mergedto{color:#33b1ff;font-size:11px;white-space:nowrap}
+  .lanerow .btn{padding:2px 8px;font-size:11px}
+  #mergefoot{flex:0 0 auto;display:flex;gap:10px;padding:11px 20px;border-top:1px solid var(--line)}
+  #mergename{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+       border-radius:6px;padding:6px 9px;font-size:13px}
+  #detail .empty{color:var(--muted)}
+  #detail .info h3{margin:0 0 4px;font-size:14px}
+  #detail .info .cmd{color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:11px;word-break:break-all;margin-bottom:8px}
+  #detail .info table{border-collapse:collapse} #detail .info td{padding:2px 0}
+  #detail .info td.k{color:var(--muted);padding-right:14px;white-space:nowrap}
+  #chartbox{flex:1;min-width:320px}
+  #chartbox .title{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+  svg text{fill:var(--muted);font-size:10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⏱ Scheduler Monitor{% if conf.DEMO %} <span style="color:var(--timeout);font-weight:400">· demo data</span>{% endif %}</h1>
+  <button id="refresh" class="btn">⟳ Refresh</button>
+  <span class="meta" id="meta"></span>
+  <span class="status" id="status"></span>
+</header>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="filters">
+  <div><span class="lbl">search</span><input type="text" id="q" placeholder="job name / command…"></div>
+  <div><span class="lbl">view</span>
+    <select id="view">
+      <option value="job">Grouped by job</option>
+      <option value="stack">Stacked (concurrency)</option>
+    </select>
+  </div>
+  <div><span class="lbl">sort</span>
+    <select id="sort">
+      <option value="cad_dur">cadence · duration</option>
+      <option value="cad_name">cadence · name</option>
+      <option value="name">name</option>
+      <option value="dur">duration (longest first)</option>
+      <option value="runs">run count</option>
+    </select>
+  </div>
+  <div id="outcomes"><span class="lbl">outcome</span></div>
+  <div id="cadences"><span class="lbl">cadence</span></div>
+  <div id="sources"><span class="lbl">source</span></div>
+  <div><label class="chip" id="memhotchip"><input type="checkbox" id="memhot">⚠ mem ≥ 80% quota</label></div>
+  <div><label class="chip" id="downscalechip"><input type="checkbox" id="downscale">⤓ downscalable</label></div>
+  <div><button id="lanesbtn" class="btn" title="merge / split job lanes">⚙ lanes</button></div>
+</div>
+<div class="legendwrap" id="legend"></div>
+
+<div id="tlwrap"><div id="timeline"></div><div id="labelresizer"></div></div>
+<div id="detail"><div class="empty">Click a run to see its details and memory-over-time chart.</div></div>
+
+<div id="logmodal" style="display:none">
+  <div id="logpanel">
+    <div class="logmodal-head">
+      <span id="logtitle"></span>
+      <span id="loghint"></span>
+      <span id="streamfilters">
+        <label class="chip on" data-f="log"><span class="dot" style="background:var(--muted)"></span>log</label>
+        <label class="chip on" data-f="sql"><span class="dot" style="background:#33b1ff"></span>SQL</label>
+      </span>
+      <button id="logclose" class="btn">✕ Close (Esc)</button>
+    </div>
+    <div id="modallist"></div>
+    <div id="modalcharts"></div>
+  </div>
+</div>
+
+<div id="mergemodal" style="display:none">
+  <div id="mergepanel">
+    <div class="logmodal-head">
+      <span style="font-weight:600">Lane grouping</span>
+      <span id="loghint2">tick lanes → Merge; numeric args are auto-grouped (N) — use split to undo per lane</span>
+      <button id="mergeclose" class="btn" style="margin-left:auto">✕ Close (Esc)</button>
+    </div>
+    <div id="mergebody"></div>
+    <div id="mergefoot">
+      <input id="mergename" placeholder="name for the merged lane (optional)">
+      <button id="mergedo" class="btn">Merge selected</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// endpoints + CSRF injected by Django; everything below is framework-agnostic
+const CFG={
+  api:{
+    data:"{% url 'scheduler_monitor:api_data' %}",
+    older:"{% url 'scheduler_monitor:api_older' %}",
+    output:"{% url 'scheduler_monitor:api_output' %}",
+    merges:"{% url 'scheduler_monitor:api_merges' %}",
+  },
+  csrf:"{{ csrf_token }}",
+};
+const OUTCOMES = [
+  ["success","ok","var(--ok)"],["failed","fail","var(--fail)"],
+  ["oom_killed","oom","var(--oom)"],["timed_out","timeout","var(--timeout)"],
+  ["crashed","crash","var(--crash)"],["running","run","var(--run)"],
+  ["stopped","stop","var(--stopped)"],["ended","u","var(--unknown)"],["unknown","u","var(--unknown)"],
+];
+const CADENCE_ORDER=["5 min","10 min","20 min","30 min","hourly","few/day","daily","irregular","rare/ad-hoc"];
+// Heroku RAM tiers (MB -> name), ascending
+const MEM_TIERS=[[512,"Standard-1X"],[1024,"Standard-2X"],[2560,"Performance-M"],
+                 [14336,"Performance-L"],[30720,"Performance-L-RAM"],[63488,"Performance-XL"]];
+// smallest tier strictly below the run's dyno where peak mem stays < 80% -> downscale target (or null)
+function downscaleTarget(r){
+  if(r.peak_rss_mb==null||r.peak_rss_mb<0||!r.quota_mb) return null;
+  for(const [mb,name] of MEM_TIERS){
+    if(mb>=r.quota_mb) break;                     // not smaller than current dyno
+    if(r.peak_rss_mb < 0.8*mb) return {mb,name};  // whole run fits under 80% of this smaller tier
+  }
+  return null;
+}
+let DATA=null, timeline=null, itemRun={};
+const activeOutcome = new Set(OUTCOMES.map(o=>o[0]));
+const activeCadence = new Set();
+const activeSource = new Set();
+
+// manual lane overrides on top of the numeric-normalized group_label heuristic
+let MERGES={merges:[], splits:[], map:{}};
+function loadMerges(){
+  return fetch(CFG.api.merges).then(r=>r.json()).then(d=>{
+    MERGES={merges:d.merges||[], splits:d.splits||[], map:{}};
+    MERGES.merges.forEach(g=>g.members.forEach(m=>MERGES.map[m]=g.name));
+  }).catch(()=>{});
+}
+function saveMerges(){
+  return fetch(CFG.api.merges,{method:"POST",
+    headers:{"Content-Type":"application/json","X-CSRFToken":CFG.csrf},
+    body:JSON.stringify({merges:MERGES.merges, splits:MERGES.splits})})
+    .then(r=>r.json()).then(()=>loadMerges());
+}
+// lane identity: manual merge > manual split (exact args) > numeric-normalized group
+function effectiveLane(r){
+  if(MERGES.map[r.group_label]) return MERGES.map[r.group_label];
+  if(MERGES.splits.includes(r.group_label)) return r.job_label;
+  return r.group_label;
+}
+
+function fmtDur(s){ if(s==null)return "—"; if(s<60)return s.toFixed(1)+"s";
+  const m=Math.floor(s/60), r=Math.round(s%60); if(m<60)return m+"m "+r+"s";
+  return Math.floor(m/60)+"h "+(m%60)+"m"; }
+function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+function memCell(r){
+  if(r.peak_rss_mb==null||!r.quota_mb) return "—";
+  const t=downscaleTarget(r);
+  const hint=t?`<div style="color:#33b1ff;margin-top:2px">⤓ fits ${t.name} (${t.mb} MB)</div>`:"";
+  return `${r.peak_rss_mb} / ${r.quota_mb} MB <b>(${r.mem_pct}%)</b>
+     <div class="bar"><i style="width:${Math.min(100,r.mem_pct)}%;${r.mem_pct>=80?'background:#ffd33d':''}"></i></div>${hint}`;
+}
+function tooltip(r){
+  return `<div class="tt"><h4>${esc(r.job_key)}</h4><div class="cmd">${esc(r.command)}</div>
+    <table>
+      <tr><td class="k">source</td><td>${esc(r.source)}</td></tr>
+      <tr><td class="k">dyno</td><td>${esc(r.dyno)}${r.dyno_size?` · ${r.dyno_size}`:""}</td></tr>
+      <tr><td class="k">started</td><td>${new Date(r.start).toLocaleString()}</td></tr>
+      <tr><td class="k">ended</td><td>${r.end?new Date(r.end).toLocaleString():"running"}</td></tr>
+      <tr><td class="k">duration</td><td>${fmtDur(r.duration_s)}</td></tr>
+      <tr><td class="k">outcome</td><td>${esc(r.outcome)}${r.exit_status!=null?` (exit ${r.exit_status})`:""}</td></tr>
+      <tr><td class="k">peak mem</td><td>${memCell(r)}</td></tr>
+      <tr><td class="k">peak load</td><td>${r.peak_load!=null?r.peak_load:"—"}</td></tr>
+      <tr><td class="k">cadence</td><td>${esc(r.cadence)}</td></tr>
+    </table></div>`;
+}
+
+// max-preserving downsample to <=n points (keeps spikes visible)
+function downsample(s,n){
+  if(s.length<=n) return s;
+  const out=[], bucket=s.length/n;
+  for(let i=0;i<n;i++){
+    const a=Math.floor(i*bucket), b=Math.min(s.length,Math.floor((i+1)*bucket));
+    let mx=s[a]; for(let j=a+1;j<b;j++) if(s[j][1]>mx[1]) mx=s[j];
+    out.push(mx);
+  }
+  return out;
+}
+
+// generic line+area chart over run duration. opts: {title,color,yMax,unit,refLines:[{v,label,color}],fmt}
+function seriesChart(series,opts){
+  if(!series||series.length<2) return `<div class="title">${opts.title}</div>
+    <div style="color:var(--muted)">No samples for this run (job shorter than the ~10–20s sample interval, or outside the series window).</div>`;
+  const s=downsample(series,300);
+  const W=620,H=140,padL=46,padB=18,padT=8,padR=10;
+  const maxT=opts.axisMax||Math.max(...series.map(p=>p[0]));
+  const peak=Math.max(...series.map(p=>p[1]));
+  const yMax=opts.yMax||peak*1.1||1;
+  const fmt=opts.fmt||(v=>Math.round(v));
+  const x=t=>padL+(W-padL-padR)*(maxT?t/maxT:0);
+  const y=v=>padT+(H-padT-padB)*(1-Math.min(v,yMax)/yMax);
+  const line=s.map((p,i)=>(i?"L":"M")+x(p[0]).toFixed(1)+","+y(p[1]).toFixed(1)).join(" ");
+  const area=`M${x(0)},${y(0)} `+s.map(p=>"L"+x(p[0]).toFixed(1)+","+y(p[1]).toFixed(1)).join(" ")+` L${x(maxT)},${y(0)} Z`;
+  const ticks=[0,.5,1].map(f=>({v:yMax*f,yy:y(yMax*f)}));
+  const refs=(opts.refLines||[]).filter(r=>r.v<=yMax).map(r=>
+    `<line x1="${padL}" x2="${W-padR}" y1="${y(r.v)}" y2="${y(r.v)}" stroke="${r.color||'#ffd33d'}" stroke-dasharray="4 3" opacity=".7"/>
+     <text x="${W-padR-4}" y="${y(r.v)-3}" text-anchor="end" style="fill:${r.color||'#ffd33d'}">${r.label}</text>`).join("");
+  const preserve=opts.stretch?'none':'xMidYMid meet';
+  const svgH=opts.stretch?' height="100%"':'';
+  return `<div class="title">${opts.title}</div>
+  <svg viewBox="0 0 ${W} ${H}" width="100%"${svgH} preserveAspectRatio="${preserve}"
+       data-maxt="${maxT}" data-padl="${padL}" data-plotw="${W-padL-padR}">
+    ${ticks.map(t=>`<line x1="${padL}" x2="${W-padR}" y1="${t.yy}" y2="${t.yy}" stroke="#2c3743"/>
+      <text x="4" y="${t.yy+3}">${fmt(t.v)}</text>`).join("")}
+    ${refs}
+    <path d="${area}" fill="${opts.color}" opacity=".15"/>
+    <path d="${line}" fill="none" stroke="${opts.color}" stroke-width="1.6"/>
+    <rect class="mkband" x="0" y="${padT}" width="0" height="${H-padT-padB}" fill="#33b1ff" opacity=".28" style="display:none"/>
+    <line class="mkline" x1="0" x2="0" y1="${padT}" y2="${H-padB}" stroke="#fff" stroke-width="1.2" style="display:none"/>
+    <text x="${padL}" y="${H-5}">0s</text>
+    <text x="${W-padR}" y="${H-5}" text-anchor="end">${Math.round(maxT)}s</text>
+  </svg>`;
+}
+
+function memChartSVG(r,axisMax){
+  const quota=r.quota_mb;
+  return seriesChart(r.mem_series,{
+    title:`memory (RSS) over run duration — peak ${r.peak_rss_mb??"—"} / ${quota??"—"} MB`,
+    color:"var(--accent)", yMax:quota, axisMax, stretch:axisMax!=null,
+    refLines: quota?[{v:quota*0.8,label:"80% quota",color:"#ffd33d"}]:[],
+  });
+}
+function loadChartSVG(r,axisMax){
+  return seriesChart(r.load_series,{
+    title:`load average (1m) over run duration — peak ${r.peak_load??"—"}`,
+    color:"#3fb6b0", fmt:v=>v.toFixed(1), axisMax, stretch:axisMax!=null,
+    refLines:[{v:1,label:"1.0 ≈ 1 core",color:"#8b98a5"}],
+  });
+}
+
+function slowQueriesHTML(r){
+  if(!DATA.slowQ||!DATA.slowQ.length) return "";
+  // exact attribution: application_name == this run's dyno id AND logged within
+  // the run's window (dyno names recycle, so the time bound disambiguates).
+  const start=Date.parse(r.start), end=(r.end?Date.parse(r.end):Date.now());
+  const hits=DATA.slowQ.filter(q=>q.app===r.dyno && q.ms>=start-90000 && q.ms<=end+90000)
+                       .sort((a,b)=>b.dur_ms-a.dur_ms).slice(0,20);
+  const body = hits.length
+    ? `<table>${hits.map(q=>`<tr>
+        <td class="dur">${fmtDur(q.dur_ms/1000)}</td>
+        <td class="sql"><div class="sqltext" title="click to view full query">${esc(q.sql)}${q.sql.length>=12000?" …[truncated]":""}</div></td></tr>`).join("")}</table>`
+    : `<div style="color:var(--muted)">No &gt;1s queries tagged <code>${esc(r.dyno)}</code>.
+        Either this run issued none, or it predates the <code>application_name</code> rollout
+        (older runs' queries were logged as <code>[unknown]</code> and aren't shown — no guessing).</div>`;
+  return `<div id="slowq">
+    <div class="title">slow DB queries from this dyno — ${esc(r.dyno)}${hits.length?` (top ${hits.length} by duration)`:""}</div>
+    ${body}</div>`;
+}
+
+function showDetail(r){
+  document.getElementById("detail").innerHTML = !r ?
+    `<div class="empty">Click a run to see its details and memory-over-time chart.</div>` :
+    `<div class="info"><h3>${esc(r.job_label)}</h3><div class="cmd">${esc(r.command)}</div>
+      <table>
+        <tr><td class="k">source</td><td>${esc(r.source)}</td></tr>
+        <tr><td class="k">dyno</td><td>${esc(r.dyno)}${r.dyno_size?` · ${r.dyno_size}`:""}</td></tr>
+        <tr><td class="k">started</td><td>${new Date(r.start).toLocaleString()}</td></tr>
+        <tr><td class="k">duration</td><td>${fmtDur(r.duration_s)}</td></tr>
+        <tr><td class="k">outcome</td><td>${esc(r.outcome)}${r.exit_status!=null?` (exit ${r.exit_status})`:""}</td></tr>
+        <tr><td class="k">peak mem</td><td>${memCell(r)}</td></tr>
+        <tr><td class="k">peak load</td><td>${r.peak_load!=null?r.peak_load:"—"}</td></tr>
+        <tr><td class="k">cadence</td><td>${esc(r.cadence)}</td></tr>
+      </table>
+      <button class="btn outbtn" style="margin-top:12px">📄 Log &amp; slow queries</button></div>
+     <div id="chartbox">${memChartSVG(r)}<div style="height:10px"></div>${loadChartSVG(r)}</div>
+     ${slowQueriesHTML(r)}`;
+  currentRun=r;
+}
+
+let currentRun=null;
+function closeLog(){ document.getElementById("logmodal").style.display="none"; document.body.style.overflow=""; }
+function fmtLogTime(t){ const d=new Date(t); return isNaN(d)?"":
+  d.toLocaleTimeString([], {hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0"); }
+// light SQL pretty-print: break before major clauses (best-effort, prototype)
+function formatSql(s){
+  return s.replace(/ (FROM|WHERE|GROUP BY|ORDER BY|LIMIT|HAVING|UNION ALL|UNION|LEFT OUTER JOIN|RIGHT OUTER JOIN|INNER JOIN|LEFT JOIN|CROSS JOIN|JOIN) /gi, "\n$1 ");
+}
+
+// widest time offset for the run's charts (so list items map onto the same axis)
+function runMaxT(r){
+  let m=r.duration_s||0;
+  for(const s of [r.mem_series, r.load_series]) if(s) for(const p of s) if(p[0]>m) m=p[0];
+  return m||1;
+}
+function modalCharts(r){
+  const mx=runMaxT(r);
+  return `<div class="mchart">${memChartSVG(r,mx)}</div><div class="mchart">${loadChartSVG(r,mx)}</div>`;
+}
+// one chronological stream merging the run's log lines and its slow queries
+function buildStream(r, lines, trunc){
+  const st=Date.parse(r.start), en=r.end?Date.parse(r.end):Date.now();
+  const ev=[];
+  (lines||[]).forEach(l=>{ const ms=Date.parse(l.t); ev.push({ms, off:(ms-st)/1000, kind:"log", text:l.m}); });
+  (DATA.slowQ||[]).filter(q=>q.app===r.dyno && q.ms>=st-90000 && q.ms<=en+90000)
+    .forEach(q=>ev.push({ms:q.ms, off:(q.ms-st)/1000, kind:"sql", dur:q.dur_ms/1000, text:q.sql}));
+  ev.sort((a,b)=>a.ms-b.ms);
+  if(!ev.length) return `<div class="logitem" style="cursor:default;color:var(--muted)">(no log lines or slow queries for this run)</div>`;
+  let h=ev.map(e=> e.kind==="log"
+    ? `<div class="logitem log" data-off="${e.off.toFixed(1)}"><span class="ts">${fmtLogTime(e.ms)}</span>${esc(e.text)}</div>`
+    : `<div class="logitem sql" data-off="${e.off.toFixed(1)}" data-dur="${e.dur.toFixed(1)}"><span class="ts">${fmtLogTime(e.ms)}</span><span class="qdur">SQL ${fmtDur(e.dur)}</span>${esc(formatSql(e.text))}</div>`
+  ).join("");
+  if(trunc) h+=`<div class="logitem" style="cursor:default;color:var(--muted)">… output truncated — showing the most recent ${lines.length} log lines</div>`;
+  return h;
+}
+function openStream(r, lines, trunc){
+  const nSql=(DATA.slowQ||[]).filter(q=>q.app===r.dyno).length;
+  document.getElementById("logtitle").textContent =
+    `log & slow queries — ${r.job_label} · ${r.dyno}${r.dyno_size?" · "+r.dyno_size:""}`;
+  document.getElementById("loghint").textContent =
+    `${(lines||[]).length} log lines · ${nSql} slow queries · click any → marked on the charts`;
+  const list=document.getElementById("modallist");
+  list.innerHTML=buildStream(r, lines, trunc); list.className="";
+  document.getElementById("modalcharts").innerHTML=modalCharts(r);
+  selMark=null;   // no locked marker until a line is clicked
+  document.querySelectorAll("#streamfilters .chip").forEach(c=>c.classList.add("on"));
+  document.getElementById("logmodal").style.display="block";
+  document.body.style.overflow="hidden";
+  list.scrollTop=0;
+}
+function showStream(r){
+  if(!r) return;
+  if(r.__outLines){ openStream(r, r.__outLines, r.__outTrunc); return; }
+  const btn=document.querySelector(".outbtn"); btn.disabled=true; const old=btn.textContent; btn.textContent="Loading…";
+  const p=new URLSearchParams({dyno:r.dyno, start:r.start, end:r.end||new Date().toISOString()});
+  fetch(CFG.api.output+"?"+p).then(x=>x.json()).then(res=>{
+    btn.disabled=false; btn.textContent=old;
+    if(!res.ok){ alert("Output error: "+res.error); return; }
+    r.__outLines=res.lines; r.__outTrunc=res.truncated;
+    openStream(r, res.lines, res.truncated);
+  }).catch(()=>{ btn.disabled=false; btn.textContent=old; alert("Failed to load output"); });
+}
+// mark a list item's time (or a query's duration) on the charts
+let selMark=null;   // the clicked (locked) item's {off,dur}, restored when the mouse leaves
+function markCharts(off, dur){
+  document.querySelectorAll("#modalcharts svg").forEach(svg=>{
+    const maxt=+svg.dataset.maxt||1, padl=+svg.dataset.padl, plotw=+svg.dataset.plotw;
+    const X=o=>padl+plotw*Math.max(0,Math.min(1,o/maxt));
+    const line=svg.querySelector(".mkline"), band=svg.querySelector(".mkband");
+    if(!line||!band) return;
+    if(dur!=null && dur>0){ band.setAttribute("x",X(off)); band.setAttribute("width",Math.max(1,X(off+dur)-X(off)));
+      band.style.display=""; line.style.display="none"; }
+    else { line.setAttribute("x1",X(off)); line.setAttribute("x2",X(off)); line.style.display=""; band.style.display="none"; }
+  });
+}
+function clearMarks(){ document.querySelectorAll("#modalcharts .mkline,#modalcharts .mkband").forEach(el=>el.style.display="none"); }
+
+// lane-grouping modal: one row per heuristic group (group_label)
+function openLanesModal(){
+  const info={};
+  DATA.runs.forEach(r=>{const s=info[r.group_label]=info[r.group_label]||{variants:new Set(),count:0};
+    s.variants.add(r.job_label); s.count++;});
+  document.getElementById("mergebody").innerHTML=Object.keys(info).sort().map(k=>{
+    const s=info[k], merged=MERGES.map[k], split=MERGES.splits.includes(k);
+    return `<div class="lanerow">
+      <input type="checkbox" class="lanechk" value="${esc(k)}" ${merged?"disabled":""}>
+      <span class="lname">${esc(k)}</span>
+      <span class="lmeta">${s.count} runs${s.variants.size>1?` · ${s.variants.size} variants`:""}</span>
+      ${merged?`<span class="mergedto">→ ${esc(merged)}</span><button class="btn" data-unmerge="${esc(k)}">unmerge</button>`:""}
+      ${!merged&&s.variants.size>1?`<button class="btn" data-split="${esc(k)}">${split?"unsplit":"split"}</button>`:""}
+    </div>`;
+  }).join("");
+  document.getElementById("mergemodal").style.display="block";
+  document.body.style.overflow="hidden";
+}
+function closeLanesModal(){ document.getElementById("mergemodal").style.display="none"; document.body.style.overflow=""; }
+
+function passFilters(r){
+  const q=document.getElementById("q").value.trim().toLowerCase();
+  const memhot=document.getElementById("memhot").checked;
+  const downscale=document.getElementById("downscale").checked;
+  if(!activeOutcome.has(r.outcome)) return false;
+  if(!activeCadence.has(r.cadence)) return false;
+  if(!activeSource.has(r.source)) return false;
+  if(q && !(r.job_label.toLowerCase().includes(q)||r.command.toLowerCase().includes(q))) return false;
+  if(memhot && !(r.mem_pct!=null && r.mem_pct>=80)) return false;
+  if(downscale && !downscaleTarget(r)) return false;
+  return true;
+}
+// visible timeline window in ms (default: last 24h)
+function visibleWindow(){
+  if(timeline){ const w=timeline.getWindow(); return [w.start.getTime(), w.end.getTime()]; }
+  return [DATA.maxTime-24*3600*1000, DATA.maxTime];
+}
+function updateTiles(){
+  const [s,e]=visibleWindow();
+  renderTiles(DATA.runs.filter(r=>passFilters(r) &&
+    new Date(r.start).getTime()>=s && new Date(r.start).getTime()<=e));
+}
+
+function renderTiles(rows){
+  const by=o=>rows.filter(r=>r.outcome===o).length;
+  const durs=rows.filter(r=>r.duration_s!=null).map(r=>r.duration_s);
+  const avg=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
+  const tiles=[
+    ["total",rows.length,""],["succeeded",by("success"),"ok"],["failed",by("failed")+by("unknown"),"fail"],
+    ["oom-killed",by("oom_killed"),"oom"],["timed-out",by("timed_out"),"timeout"],["running",by("running"),"run"],
+    ["max dur",durs.length?fmtDur(Math.max(...durs)):"—",""],["avg dur",durs.length?fmtDur(avg):"—",""],
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(([l,n,c])=>
+    `<div class="tile ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+}
+
+let selectedLane=null, hoverLaneIdx=-1, laneEls={labels:[], fg:[]};
+function refreshLaneEls(){   // cache lane DOM (rebuilt on every timeline redraw)
+  laneEls.labels=[...document.querySelectorAll("#timeline .vis-labelset .vis-label")];
+  laneEls.fg=[...document.querySelectorAll("#timeline .vis-foreground .vis-group")];
+}
+function laneIdxOf(jobLabel){   // vis strips title attrs -> match the label's text
+  if(!jobLabel) return -1;
+  const norm=s=>s.replace(/\s+/g," ").trim(), t=norm(jobLabel);
+  return laneEls.labels.findIndex(l=>norm(l.textContent)===t);
+}
+// show BOTH the opened lane (blue) and the hovered lane (white), in their colours
+function applyLanes(){
+  const si=laneIdxOf(selectedLane), hi=hoverLaneIdx;
+  const paint=el=>{el.forEach((n,idx)=>{ n.classList.toggle("lanesel", idx===si); n.classList.toggle("lanehover", idx===hi); });};
+  paint(laneEls.labels); paint(laneEls.fg);
+}
+
+function render(mode){   // mode 'recent' resets the window to the last 24h; else keep current
+  const rows=DATA.runs.filter(passFilters);
+  const grouped=document.getElementById("view").value==="job";
+  itemRun={};
+  const nowIso=new Date(Math.max(DATA.maxTime, Date.now())).toISOString();
+  // per-lane stats over the effective lane (heuristic group + manual overrides):
+  // best cadence rank + variant labels + durations, for ordering and badges
+  const laneStats={};
+  const items=rows.map((r,i)=>{
+    itemRun[i]=r;
+    const lane=effectiveLane(r);
+    const s=laneStats[lane]=laneStats[lane]||{rank:CADENCE_ORDER.length,durs:[],variants:new Set(),count:0};
+    s.count++;
+    const rk=CADENCE_ORDER.indexOf(r.cadence); if(rk>=0&&rk<s.rank)s.rank=rk;
+    if(r.duration_s!=null)s.durs.push(r.duration_s);
+    s.variants.add(r.job_label);
+    const argsHtml = r.args? ` <span class="args">${esc(r.args)}</span>`:"";
+    return {
+      id:i, group: grouped? lane : 1,
+      content: grouped? "" : (esc(r.job_key)+argsHtml),
+      start:r.start, end:r.end||nowIso,   // running runs extend to "now"
+      title: tooltip(r),
+      className: r.outcome + (r.mem_pct>=80?" memhot":"") + (downscaleTarget(r)?" downscale":""),
+    };
+  });
+  // lane order: user-selectable (sort control)
+  Object.values(laneStats).forEach(s=>{
+    s.durs.sort((a,b)=>a-b); s.med=s.durs.length?s.durs[s.durs.length>>1]:0; });
+  const cmp={
+    cad_dur:(a,b)=>laneStats[a].rank-laneStats[b].rank || laneStats[a].med-laneStats[b].med,
+    cad_name:(a,b)=>laneStats[a].rank-laneStats[b].rank || a.localeCompare(b),
+    name:(a,b)=>a.localeCompare(b),
+    dur:(a,b)=>laneStats[b].med-laneStats[a].med,
+    runs:(a,b)=>laneStats[b].count-laneStats[a].count,
+  }[document.getElementById("sort").value];
+  const labels=Object.keys(laneStats).sort(cmp);
+  const laneOrder={}; labels.forEach((k,i)=>laneOrder[k]=i);
+  const groups = grouped
+    ? labels.map(k=>{const jk=k.split(" ")[0], rest=k.slice(jk.length), n=laneStats[k].variants.size;
+        return {id:k, order:laneOrder[k], title:esc(k),
+          content:`<span title="${esc(k)}">${esc(jk)}${rest?` <span class="args">${esc(rest)}</span>`:""}`
+                 +(n>1?` <span class="args">(${n})</span>`:"")+`</span>`};})
+    : [{id:1,content:"",order:0}];
+  const recentStart=new Date(DATA.maxTime-24*3600*1000), recentEnd=new Date(DATA.maxTime+60000);
+  const opts={
+    stack:true, stackSubgroups:true, orientation:"top",
+    groupOrder:(a,b)=>(a.order||0)-(b.order||0),
+    zoomMin:1000*60, zoomMax:14*24*3600*1000,
+    min:new Date(DATA.minTime-3600000), max:new Date(DATA.maxTime+3600000),
+    margin:{item:2,axis:4}, tooltip:{followMouse:true,overflowMethod:"flip"},
+    selectable:true,
+  };
+  if(!timeline){
+    timeline=new vis.Timeline(document.getElementById("timeline"),new vis.DataSet(items),
+      new vis.DataSet(groups),{...opts, start:recentStart, end:recentEnd});
+    timeline.on("select",p=>{ const r=p.items.length?itemRun[p.items[0]]:null;
+      selectedLane=r?effectiveLane(r):null; showDetail(r); applyLanes(); });
+    timeline.on("changed",()=>{ refreshLaneEls(); applyLanes(); });
+    timeline.on("rangechanged",onRangeChanged);
+    // highlight the lane under the cursor anywhere along the row (bars + gaps + label)
+    const tlEl=document.getElementById("timeline");
+    tlEl.addEventListener("mousemove",e=>{
+      let i=-1;
+      const g=e.target.closest(".vis-group"); if(g) i=laneEls.fg.indexOf(g);
+      if(i<0){ const l=e.target.closest(".vis-label"); if(l) i=laneEls.labels.indexOf(l); }
+      if(i===hoverLaneIdx) return;
+      hoverLaneIdx=i; applyLanes();
+    });
+    tlEl.addEventListener("mouseleave",()=>{ hoverLaneIdx=-1; applyLanes(); });
+  }else{
+    timeline.setOptions(opts);   // min/max grow as older data loads; window untouched
+    timeline.setGroups(new vis.DataSet(groups));
+    timeline.setItems(new vis.DataSet(items));
+    if(mode==="recent") timeline.setWindow(recentStart,recentEnd,{animation:false});
+  }
+  updateTiles();
+}
+
+let loadingOlder=false, noMoreOlder=false;
+function onRangeChanged(){
+  updateTiles();
+  const w=timeline.getWindow();
+  if(w.start.getTime() <= DATA.minTime + 60*60*1000) loadOlder();  // panned near the left edge
+}
+function setStatus(msg){ document.getElementById("status").textContent=msg||""; }
+
+// client-side dataset merging (the server stays stateless):
+// runs dedup on (dyno,start) preferring the copy with a terminal end,
+// slow queries dedup on (app,time,duration)
+function mergeRuns(base, extra){
+  const key=r=>r.dyno+"|"+r.start;
+  const m=new Map(base.map(r=>[key(r),r]));
+  extra.forEach(r=>{const old=m.get(key(r));
+    if(!old || r.end!=null || old.end==null) m.set(key(r),r);});
+  return [...m.values()].sort((a,b)=>a.start<b.start?-1:1);
+}
+function mergeSlowQ(base, extra){
+  const key=q=>q.app+"|"+q.t+"|"+q.dur_ms;
+  const m=new Map(base.map(q=>[key(q),q]));
+  extra.forEach(q=>m.set(key(q),q));
+  return [...m.values()];
+}
+
+function loadOlder(){
+  if(loadingOlder||noMoreOlder) return;
+  loadingOlder=true; setStatus("Loading older…");
+  const before=new Date(DATA.minTime).toISOString();
+  fetch(CFG.api.older+"?before="+encodeURIComponent(before)).then(r=>r.json()).then(res=>{
+    if(!res.ok){ setStatus("Load error: "+res.error); loadingOlder=false; return; }
+    const w=timeline.getWindow(), nBefore=DATA.runs.length;
+    const runs=mergeRuns(DATA.runs, res.runs||[]);
+    if(runs.length===nBefore){ noMoreOlder=true; setStatus("No older data available"); loadingOlder=false; return; }
+    applyData({...DATA, runs, slow_queries:mergeSlowQ(DATA.slow_queries||[], res.slow_queries||[])});
+    buildChips(); render();                          // keep window
+    timeline.setWindow(w.start,w.end,{animation:false});
+    setStatus("Loaded "+(runs.length-nBefore)+" older runs (back to "+new Date(DATA.minTime).toLocaleDateString()+")");
+    loadingOlder=false;
+  }).catch(()=>{ setStatus("Load error"); loadingOlder=false; });
+}
+
+function refreshData(){
+  const btn=document.getElementById("refresh"); btn.disabled=true;
+  setStatus("Refreshing…");
+  fetch(CFG.api.data+"?force=1").then(r=>r.json()).then(d=>{
+    if(!d.ok){ setStatus("Refresh error: "+d.error); btn.disabled=false; return; }
+    const w=timeline&&timeline.getWindow();          // keep the user's current view
+    noMoreOlder=false;
+    d.runs=mergeRuns(DATA?DATA.runs:[], d.runs||[]); // keep already-loaded older history
+    d.slow_queries=mergeSlowQ(DATA?(DATA.slow_queries||[]):[], d.slow_queries||[]);
+    applyData(d); buildChips(); render();
+    if(w) timeline.setWindow(w.start,w.end,{animation:false});
+    setStatus("Refreshed "+new Date(d.generated_at).toLocaleTimeString()); btn.disabled=false;
+  }).catch(()=>{ setStatus("Refresh error"); btn.disabled=false; });
+}
+
+function chipRow(containerId, values, active, colorFor){
+  const box=document.getElementById(containerId);
+  [...box.querySelectorAll('.chip')].forEach(e=>e.remove());
+  values.forEach(v=>{
+    const el=document.createElement("label"); el.className="chip"+(active.has(v)?" on":"");
+    el.innerHTML=(colorFor?`<span class="dot" style="background:${colorFor(v)}"></span>`:"")+esc(v);
+    el.addEventListener("click",ev=>{ev.preventDefault();
+      active.has(v)?active.delete(v):active.add(v);
+      el.classList.toggle("on",active.has(v)); render();});
+    box.appendChild(el);
+  });
+}
+function buildChips(){
+  chipRow("outcomes", OUTCOMES.filter(o=>DATA.runs.some(r=>r.outcome===o[0])).map(o=>o[0]),
+    activeOutcome, v=>{const f=OUTCOMES.find(o=>o[0]===v); return f?f[2]:"var(--muted)";});
+  chipRow("cadences", [...new Set(DATA.runs.map(r=>r.cadence))]
+    .sort((a,b)=>CADENCE_ORDER.indexOf(a)-CADENCE_ORDER.indexOf(b)), activeCadence, null);
+  chipRow("sources", [...new Set(DATA.runs.map(r=>r.source))].sort(), activeSource, null);
+}
+
+let wired=false;
+function wireOnce(){
+  if(wired) return; wired=true;
+  document.getElementById("memhotchip").addEventListener("click",()=>{
+    const cb=document.getElementById("memhot"); setTimeout(()=>{
+      document.getElementById("memhotchip").classList.toggle("on",cb.checked); render();});
+  });
+  document.getElementById("downscalechip").addEventListener("click",()=>{
+    const cb=document.getElementById("downscale"); setTimeout(()=>{
+      document.getElementById("downscalechip").classList.toggle("on",cb.checked); render();});
+  });
+  ["q","view","sort"].forEach(id=>document.getElementById(id).addEventListener("input",render));
+  document.getElementById("refresh").addEventListener("click",refreshData);
+  // detail panel: output button or a slow-query row -> the combined stream
+  document.getElementById("detail").addEventListener("click",e=>{
+    if(e.target.closest(".sqltext")||e.target.closest(".outbtn")){ showStream(currentRun); }
+  });
+  // hover a stream item -> preview its time on the charts; click -> lock it in
+  const listEl=document.getElementById("modallist");
+  const offOf=it=>parseFloat(it.dataset.off);
+  const durOf=it=>it.dataset.dur!==undefined?parseFloat(it.dataset.dur):null;
+  listEl.addEventListener("mouseover",e=>{
+    const it=e.target.closest(".logitem"); if(!it || it.dataset.off===undefined) return;
+    markCharts(offOf(it), durOf(it));
+  });
+  listEl.addEventListener("mouseleave",()=>{ selMark?markCharts(selMark.off, selMark.dur):clearMarks(); });
+  listEl.addEventListener("click",e=>{
+    const it=e.target.closest(".logitem"); if(!it || it.dataset.off===undefined) return;
+    listEl.querySelectorAll(".logitem.sel").forEach(x=>x.classList.remove("sel"));
+    it.classList.add("sel");
+    selMark={off:offOf(it), dur:durOf(it)};
+    markCharts(selMark.off, selMark.dur);
+  });
+  // stream filter chips: toggle log / SQL visibility
+  document.getElementById("streamfilters").addEventListener("click",e=>{
+    const chip=e.target.closest(".chip"); if(!chip) return;
+    chip.classList.toggle("on");
+    document.getElementById("modallist").classList.toggle("hide-"+chip.dataset.f, !chip.classList.contains("on"));
+  });
+  // full-screen log modal: close via button, backdrop click, or Esc
+  document.getElementById("logclose").addEventListener("click",closeLog);
+  document.getElementById("logmodal").addEventListener("click",e=>{ if(e.target.id==="logmodal") closeLog(); });
+  window.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeLog(); closeLanesModal(); } });
+  // lane-grouping modal
+  document.getElementById("lanesbtn").addEventListener("click",openLanesModal);
+  document.getElementById("mergeclose").addEventListener("click",closeLanesModal);
+  document.getElementById("mergemodal").addEventListener("click",e=>{ if(e.target.id==="mergemodal") closeLanesModal(); });
+  document.getElementById("mergebody").addEventListener("click",e=>{
+    const un=e.target.closest("[data-unmerge]");
+    if(un){ const m=un.dataset.unmerge;
+      MERGES.merges=MERGES.merges.filter(g=>!g.members.includes(m));
+      saveMerges().then(()=>{ render(); openLanesModal(); }); return; }
+    const sp=e.target.closest("[data-split]");
+    if(sp){ const k=sp.dataset.split;
+      MERGES.splits=MERGES.splits.includes(k)?MERGES.splits.filter(x=>x!==k):[...MERGES.splits,k];
+      saveMerges().then(()=>{ render(); openLanesModal(); }); }
+  });
+  document.getElementById("mergedo").addEventListener("click",()=>{
+    const sel=[...document.querySelectorAll("#mergebody .lanechk:checked")].map(c=>c.value);
+    if(sel.length<2){ alert("Tick at least two lanes to merge."); return; }
+    const name=document.getElementById("mergename").value.trim() || sel[0].split(" ")[0]+" (merged)";
+    // a lane can belong to one group; merging supersedes prior membership + splits
+    MERGES.merges=MERGES.merges.filter(g=>!g.members.some(m=>sel.includes(m)));
+    MERGES.splits=MERGES.splits.filter(x=>!sel.includes(x));
+    MERGES.merges.push({name, members:sel});
+    saveMerges().then(()=>{ document.getElementById("mergename").value=""; render(); openLanesModal(); });
+  });
+  setupResizer();
+  document.getElementById("legend").innerHTML =
+    "Each bar = one one-off dyno run (segmented per execution — dyno names recycle). "
+    + "Default view is the last 24h; drag left to pan into the past — older data loads automatically. "
+    + "Tiles reflect the visible window. Yellow outline = peak memory ≥ 80% of dyno quota. "
+    + "Click a run for its charts + slow queries. Scroll=zoom, drag=pan.";
+}
+
+// draggable divider controlling the job-label column width
+function setupResizer(){
+  const wrap=document.getElementById("tlwrap"), handle=document.getElementById("labelresizer");
+  const place=()=>{const w=parseInt(getComputedStyle(document.documentElement).getPropertyValue("--labelw"));
+    handle.style.left=(w+6)+"px";};
+  place();
+  let dragging=false;
+  handle.addEventListener("mousedown",e=>{dragging=true;handle.classList.add("drag");e.preventDefault();
+    document.body.style.userSelect="none";});
+  window.addEventListener("mousemove",e=>{ if(!dragging)return;
+    const x=Math.max(120,Math.min(640, e.clientX - wrap.getBoundingClientRect().left - 6));
+    document.documentElement.style.setProperty("--labelw", x+"px"); handle.style.left=(x+6)+"px";});
+  window.addEventListener("mouseup",()=>{ if(!dragging)return; dragging=false;
+    handle.classList.remove("drag"); document.body.style.userSelect="";
+    if(timeline) timeline.redraw(); });
+}
+
+const knownCadence=new Set(), knownSource=new Set(), knownOutcome=new Set();
+function applyData(d){
+  DATA=d; DATA.runs.forEach(r=>{ if(r.mem_pct==null)r.mem_pct=-1; });
+  const times=DATA.runs.map(r=>new Date(r.start).getTime());
+  DATA.maxTime=Math.max(...times, Date.now()); DATA.minTime=Math.min(...times);
+  DATA.maxIso=new Date(DATA.maxTime).toISOString();
+  DATA.slowQ=(DATA.slow_queries||[]).map(q=>({...q, ms:Date.parse(q.t)}));
+  // register newly-seen filter values (default ON), preserving existing user selections
+  DATA.runs.forEach(r=>{ if(!knownCadence.has(r.cadence)){knownCadence.add(r.cadence);activeCadence.add(r.cadence);} });
+  DATA.runs.forEach(r=>{ if(!knownSource.has(r.source)){knownSource.add(r.source);activeSource.add(r.source);} });
+  OUTCOMES.forEach(([o])=>{ if(!knownOutcome.has(o)&&DATA.runs.some(r=>r.outcome===o)){knownOutcome.add(o);activeOutcome.add(o);} });
+  document.getElementById("meta").textContent =
+    `${DATA.runs.length} runs · ${new Set(DATA.runs.map(r=>r.group_label)).size} jobs · `
+    + `back to ${new Date(DATA.minTime).toLocaleDateString()} · fetched ${new Date(DATA.generated_at).toLocaleTimeString()}`;
+}
+
+Promise.all([
+  fetch(CFG.api.data).then(r=>r.json()),
+  loadMerges(),
+]).then(([d])=>{
+  applyData(d); wireOnce(); buildChips(); render();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+import json
+import re
+from datetime import datetime, timedelta
+
+from django.contrib.admin.views.decorators import staff_member_required
+from django.core.cache import cache
+from django.http import JsonResponse
+from django.shortcuts import render
+from django.views.decorators.http import require_http_methods
+
+from . import core, demo
+from .conf import get_conf
+from .models import overrides_as_dict, save_overrides
+
+RANGE_RE = re.compile(r"^\d{1,3}[mhd]$")  # relative Axiom ranges we accept from the client
+DYNO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+
+
+@staff_member_required
+def dashboard(request):
+    return render(request, "scheduler_monitor/dashboard.html", {"conf": get_conf()})
+
+
+@staff_member_required
+def api_data(request):
+    """The current dataset (runs + slow queries) for the configured lookback.
+
+    Live Axiom fetch, cached in the Django cache for CACHE_SECONDS; ?force=1
+    (the Refresh button) bypasses the cache."""
+    conf = get_conf()
+    lookback = request.GET.get("lookback") or conf["DEFAULT_LOOKBACK"]
+    series = request.GET.get("series") or conf["SERIES_LOOKBACK"]
+    if not (RANGE_RE.match(lookback) and RANGE_RE.match(series)):
+        return JsonResponse({"ok": False, "error": "bad range"}, status=400)
+    if conf["DEMO"]:
+        days = float(lookback[:-1]) * {"m": 1 / 1440, "h": 1 / 24, "d": 1}[lookback[-1]]
+        return JsonResponse({"ok": True, **demo.demo_dataset(days)})
+    key = f"scheduler_monitor:data:{lookback}:{series}"
+    data = None if request.GET.get("force") else cache.get(key)
+    if data is None:
+        data = core.build_dataset(f"now-{lookback}", "now", f"now-{series}", "now")
+        cache.set(key, data, conf["CACHE_SECONDS"])
+    return JsonResponse({"ok": True, **data})
+
+
+@staff_member_required
+def api_older(request):
+    """An older history chunk ending at ?before= (ISO). The client merges it
+    into its in-memory dataset, so the server stays stateless."""
+    conf = get_conf()
+    before = request.GET.get("before")
+    if not before:
+        return JsonResponse({"ok": False, "error": "before required"}, status=400)
+    try:
+        end = datetime.fromisoformat(before.replace("Z", "+00:00"))
+    except ValueError:
+        return JsonResponse({"ok": False, "error": "bad before"}, status=400)
+    if conf["DEMO"]:
+        return JsonResponse({"ok": True, "runs": [], "slow_queries": []})
+    start = end - timedelta(days=conf["OLDER_CHUNK_DAYS"])
+    data = core.build_dataset(start.isoformat(), end.isoformat(),
+                              start.isoformat(), end.isoformat())
+    return JsonResponse({"ok": True, **data})
+
+
+@staff_member_required
+def api_output(request):
+    """Full stdout/stderr of one run, fetched on demand."""
+    conf = get_conf()
+    dyno = request.GET.get("dyno", "")
+    start = request.GET.get("start", "")
+    end = request.GET.get("end") or "now"
+    if not DYNO_RE.match(dyno):  # dyno is interpolated into the APL query
+        return JsonResponse({"ok": False, "error": "bad dyno"}, status=400)
+    if conf["DEMO"]:
+        lines = demo.demo_output(dyno)
+        return JsonResponse({"ok": True, "lines": lines, "truncated": False,
+                             "count": len(lines)})
+    lines, truncated = core.fetch_output(dyno, start, end)
+    return JsonResponse({"ok": True, "lines": lines, "truncated": truncated,
+                         "count": len(lines)})
+
+
+@staff_member_required
+@require_http_methods(["GET", "POST"])
+def api_merges(request):
+    """Manual lane merge/split overrides, stored in the LaneOverride model."""
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body or b"{}")
+        except json.JSONDecodeError:
+            return JsonResponse({"ok": False, "error": "bad json"}, status=400)
+        save_overrides(data)
+    return JsonResponse({"ok": True, **overrides_as_dict()})
