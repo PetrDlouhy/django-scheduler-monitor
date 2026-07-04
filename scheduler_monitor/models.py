@@ -1,5 +1,84 @@
 from django.db import models
 
+RUN_FIELDS = [
+    "dyno", "source", "command", "job_key", "job_label", "group_label", "args",
+    "duration_s", "exit_status", "outcome", "stopped", "cycled",
+    "peak_rss_mb", "quota_mb", "mem_pct", "peak_load", "dyno_size", "cadence",
+    "mem_series", "load_series",
+]
+# stored series are for the detail charts; cap size (UI downsamples to ~300 anyway)
+SERIES_CAP = 400
+
+
+def _downsample(series, cap=SERIES_CAP):
+    """Max-preserving downsample of [(offset, value), ...] (keeps spikes)."""
+    if not series or len(series) <= cap:
+        return series
+    out, bucket = [], len(series) / cap
+    for i in range(cap):
+        chunk = series[int(i * bucket):max(int(i * bucket) + 1, int((i + 1) * bucket))]
+        out.append(max(chunk, key=lambda p: p[1]))
+    return out
+
+
+class Run(models.Model):
+    """One one-off dyno run, persisted by the ``sync_scheduler_runs`` command.
+
+    Stores exactly what the timeline/detail views need — run metadata plus the
+    (capped) memory/load series. Job output and slow queries are deliberately
+    NOT stored; those stay on-demand from the log drain.
+    """
+
+    dyno = models.CharField(max_length=100)
+    start = models.DateTimeField(db_index=True)
+    end = models.DateTimeField(null=True, blank=True)
+    source = models.CharField(max_length=50)
+    command = models.TextField()
+    job_key = models.CharField(max_length=255)
+    job_label = models.CharField(max_length=500)
+    group_label = models.CharField(max_length=500)
+    args = models.TextField(blank=True)
+    duration_s = models.FloatField(null=True, blank=True)
+    exit_status = models.IntegerField(null=True, blank=True)
+    outcome = models.CharField(max_length=20)
+    stopped = models.BooleanField(default=False)
+    cycled = models.BooleanField(default=False)
+    peak_rss_mb = models.FloatField(null=True, blank=True)
+    quota_mb = models.IntegerField(null=True, blank=True)
+    mem_pct = models.FloatField(null=True, blank=True)
+    peak_load = models.FloatField(null=True, blank=True)
+    dyno_size = models.CharField(max_length=30, null=True, blank=True)
+    cadence = models.CharField(max_length=20, blank=True)
+    mem_series = models.JSONField(null=True, blank=True)
+    load_series = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["dyno", "start"],
+                                               name="uniq_run_dyno_start")]
+
+    def __str__(self):
+        return f"{self.dyno} {self.job_label} @ {self.start:%Y-%m-%d %H:%M}"
+
+    def to_run_dict(self) -> dict:
+        d = {f: getattr(self, f) for f in RUN_FIELDS}
+        d["start"] = self.start.isoformat()
+        d["end"] = self.end.isoformat() if self.end else None
+        return d
+
+    @classmethod
+    def upsert_from_dict(cls, r: dict):
+        from .core import parse_ts
+
+        fields = {f: r.get(f) for f in RUN_FIELDS}
+        fields["mem_series"] = _downsample(fields["mem_series"])
+        fields["load_series"] = _downsample(fields["load_series"])
+        fields["end"] = parse_ts(r["end"]) if r.get("end") else None
+        fields["args"] = fields["args"] or ""
+        fields["cadence"] = fields["cadence"] or ""
+        _, created = cls.objects.update_or_create(
+            dyno=r["dyno"], start=parse_ts(r["start"]), defaults=fields)
+        return created
+
 
 class LaneOverride(models.Model):
     """Manual lane-grouping override on top of the numeric-normalization heuristic.

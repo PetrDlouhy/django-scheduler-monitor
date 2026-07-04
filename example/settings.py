@@ -1,5 +1,6 @@
 """Example-project settings: the packaged dashboard in DEMO mode."""
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,7 +45,15 @@ TEMPLATES = [{
 
 STATIC_URL = "/static/"
 
+# Demo data by default; set the AXIOM_DATASET env var (+ AXIOM_TOKEN) to run
+# against a real log drain. Site-specific extras (label rules, lookbacks)
+# belong in an untracked example/local_settings.py.
 SCHEDULER_MONITOR = {
-    "DEMO": True,  # generated data — swap for AXIOM_DATASET/AXIOM_TOKEN to go live
-    "AXIOM_DATASET": None,
+    "DEMO": not os.environ.get("AXIOM_DATASET"),
+    "AXIOM_DATASET": os.environ.get("AXIOM_DATASET"),
 }
+
+try:
+    from local_settings import *  # noqa: F401,F403
+except ImportError:
+    pass

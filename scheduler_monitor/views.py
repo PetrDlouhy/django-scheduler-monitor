@@ -10,7 +10,7 @@ from django.views.decorators.http import require_http_methods
 
 from . import core, demo
 from .conf import get_conf
-from .models import overrides_as_dict, save_overrides
+from .models import Run, overrides_as_dict, save_overrides
 
 RANGE_RE = re.compile(r"^\d{1,3}[mhd]$")  # relative Axiom ranges we accept from the client
 DYNO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
@@ -46,7 +46,11 @@ def api_data(request):
 @staff_member_required
 def api_older(request):
     """An older history chunk ending at ?before= (ISO). The client merges it
-    into its in-memory dataset, so the server stays stateless."""
+    into its in-memory dataset, so the server stays stateless.
+
+    Served from the Run table when the ``sync_scheduler_runs`` command has
+    persisted that period (instant, and works beyond the drain's retention);
+    otherwise fetched live from Axiom."""
     conf = get_conf()
     before = request.GET.get("before")
     if not before:
@@ -55,12 +59,17 @@ def api_older(request):
         end = datetime.fromisoformat(before.replace("Z", "+00:00"))
     except ValueError:
         return JsonResponse({"ok": False, "error": "bad before"}, status=400)
+    start = end - timedelta(days=conf["OLDER_CHUNK_DAYS"])
+    persisted = Run.objects.filter(start__gte=start, start__lt=end).order_by("start")
+    if persisted.exists():
+        return JsonResponse({"ok": True, "source": "db",
+                             "runs": [r.to_run_dict() for r in persisted],
+                             "slow_queries": []})  # not stored — on-demand only
     if conf["DEMO"]:
         return JsonResponse({"ok": True, "runs": [], "slow_queries": []})
-    start = end - timedelta(days=conf["OLDER_CHUNK_DAYS"])
     data = core.build_dataset(start.isoformat(), end.isoformat(),
                               start.isoformat(), end.isoformat())
-    return JsonResponse({"ok": True, **data})
+    return JsonResponse({"ok": True, "source": "axiom", **data})
 
 
 @staff_member_required

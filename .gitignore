@@ -7,3 +7,4 @@ build/
 db.sqlite3
 .pytest_cache/
 .coverage
+local_settings.py

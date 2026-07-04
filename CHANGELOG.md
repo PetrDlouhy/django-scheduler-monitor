@@ -4,6 +4,11 @@
 
 Initial release, extracted from an internal BlenderKit prototype:
 
+- Optional persistent history: a `Run` model + `sync_scheduler_runs`
+  management command (idempotent upsert); persisted periods are served
+  from the database (instant, beyond drain retention). Runs only — job
+  output and slow queries stay on-demand.
+
 - Timeline dashboard of all Heroku one-off dyno runs (Scheduler,
   Advanced Scheduler, `heroku run`) reconstructed from the log drain.
 - Per-run memory (RSS) and load-average charts, outcome classification

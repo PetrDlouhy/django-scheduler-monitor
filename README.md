@@ -113,6 +113,21 @@ python manage.py migrate scheduler_monitor
 
 Open `/admin/scheduler/` as a staff user. Done.
 
+### Optional: persistent history
+
+By default everything is queried live from Axiom, so history is bounded by
+your drain's retention (often just days). To keep runs forever, schedule
+
+```bash
+python manage.py sync_scheduler_runs      # idempotent upsert, every 10-30 min
+```
+
+(e.g. on Heroku Scheduler itself). Persisted periods are then served from the
+database — panning into old history becomes instant and works beyond the
+drain's retention, and runs are browsable in the Django admin. Deliberately
+**runs only**: job output and slow queries are not stored and stay on-demand
+from the drain (so they age out with its retention).
+
 > **Security note:** the Axiom token grants read access to *all* logs in the
 > dataset (which typically include emails, IPs, SQL). It is only ever used
 > server-side, and every view is staff-gated — keep it that way.
