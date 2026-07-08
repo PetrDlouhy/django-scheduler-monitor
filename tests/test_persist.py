@@ -55,6 +55,65 @@ def test_series_capped_on_store():
     assert max(v for _, v in capped) == max(v for _, v in series)  # peaks survive
 
 
+def _open_run(start, mem_series=None, **kw):
+    from datetime import datetime, timezone
+    defaults = dict(dyno=kw.pop("dyno", "scheduler.1"), source="Scheduler",
+                    command="python manage.py x", job_key="x", job_label="x",
+                    group_label="x", args="", outcome="running",
+                    mem_series=mem_series, end=None, duration_s=None)
+    defaults.update(kw)
+    if isinstance(start, str):
+        start = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    return Run.objects.create(start=start, **defaults)
+
+
+def test_close_stale_ends_old_running_row_at_last_telemetry(db):
+    from datetime import timedelta
+
+    from django.utils import timezone
+    now = timezone.now()
+    # persisted mid-run 3 days ago, last telemetry 2h in -> can't still be running
+    _open_run(now - timedelta(days=3), mem_series=[[0.0, 100.0], [7200.0, 300.0]])
+    assert Run.close_stale(now) == 1
+    run = Run.objects.get()
+    assert run.outcome == "ended"
+    assert run.duration_s == 7200.0
+    assert run.end == run.start + timedelta(seconds=7200)
+
+
+def test_close_stale_marks_24h_runs_timed_out(db):
+    from datetime import timedelta
+
+    from django.utils import timezone
+    now = timezone.now()
+    _open_run(now - timedelta(days=2), mem_series=[[0.0, 10.0], [86000.0, 20.0]])
+    Run.close_stale(now)
+    assert Run.objects.get().outcome == "timed_out"
+
+
+def test_close_stale_leaves_genuinely_running_rows_alone(db):
+    from datetime import timedelta
+
+    from django.utils import timezone
+    now = timezone.now()
+    _open_run(now - timedelta(hours=2), mem_series=[[0.0, 10.0]])
+    assert Run.close_stale(now) == 0
+    assert Run.objects.get().outcome == "running"
+
+
+def test_close_stale_falls_back_to_sibling_median(db):
+    from datetime import timedelta
+
+    from django.utils import timezone
+    now = timezone.now()
+    for i, dur in enumerate([100.0, 200.0, 300.0]):  # finished siblings
+        _open_run(now - timedelta(hours=30 + i), dyno=f"scheduler.{i}",
+                  outcome="success", end=now, duration_s=dur)
+    _open_run(now - timedelta(days=2), dyno="scheduler.99", mem_series=None)
+    Run.close_stale(now)
+    assert Run.objects.get(dyno="scheduler.99").duration_s == 200.0
+
+
 def test_api_older_serves_from_db_when_persisted(staff_client):
     call_command("sync_scheduler_runs")
     newest = Run.objects.order_by("-start").first()

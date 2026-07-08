@@ -60,6 +60,7 @@ def api_older(request):
     except ValueError:
         return JsonResponse({"ok": False, "error": "bad before"}, status=400)
     start = end - timedelta(days=conf["OLDER_CHUNK_DAYS"])
+    Run.close_stale()  # self-heal rows a one-off sync left frozen as "running"
     persisted = Run.objects.filter(start__gte=start, start__lt=end).order_by("start")
     if persisted.exists():
         return JsonResponse({"ok": True, "source": "db",

@@ -29,7 +29,8 @@ class Command(BaseCommand):
             data = core.build_dataset(f"now-{options['lookback']}", "now",
                                       f"now-{options['series']}", "now")
         created = sum(Run.upsert_from_dict(r) for r in data["runs"])
+        stale = Run.close_stale()
         self.stdout.write(self.style.SUCCESS(
             f"synced {len(data['runs'])} runs ({created} new, "
-            f"{len(data['runs']) - created} updated); table now holds "
-            f"{Run.objects.count()}"))
+            f"{len(data['runs']) - created} updated, {stale} stale closed); "
+            f"table now holds {Run.objects.count()}"))

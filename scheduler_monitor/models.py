@@ -1,4 +1,8 @@
+import statistics
+from datetime import timedelta
+
 from django.db import models
+from django.utils import timezone
 
 RUN_FIELDS = [
     "dyno", "source", "command", "job_key", "job_label", "group_label", "args",
@@ -64,6 +68,40 @@ class Run(models.Model):
         d["start"] = self.start.isoformat()
         d["end"] = self.end.isoformat() if self.end else None
         return d
+
+    @classmethod
+    def close_stale(cls, now=None) -> int:
+        """Close persisted rows that can no longer be running.
+
+        A sync that catches a run mid-flight stores it as ``running`` with no
+        end; if no later sync covers that run again (sync not scheduled, or the
+        run aged out of the sync lookback), the row would stay "running"
+        forever and the dashboard would draw it stretching to *now*. Heroku
+        kills one-off dynos at 24h, so any open row older than that is
+        certainly finished: end it at its last stored telemetry sample
+        (mirroring ``core.close_open_runs``), falling back to the job's median
+        duration. Called by the sync command and before serving persisted
+        history."""
+        now = now or timezone.now()
+        fixed = 0
+        stale = cls.objects.filter(end__isnull=True,
+                                   start__lt=now - timedelta(hours=25))
+        for run in stale:
+            offsets = [p[0] for p in (run.mem_series or [])] \
+                + [p[0] for p in (run.load_series or [])]
+            if offsets:
+                dur = max(offsets)
+            else:
+                siblings = list(cls.objects.filter(
+                    job_label=run.job_label, duration_s__isnull=False,
+                ).values_list("duration_s", flat=True)[:200])
+                dur = statistics.median(siblings) if siblings else 5.0
+            run.duration_s = dur
+            run.end = run.start + timedelta(seconds=dur)
+            run.outcome = "timed_out" if dur >= 23.5 * 3600 else "ended"
+            run.save(update_fields=["duration_s", "end", "outcome"])
+            fixed += 1
+        return fixed
 
     @classmethod
     def upsert_from_dict(cls, r: dict):
