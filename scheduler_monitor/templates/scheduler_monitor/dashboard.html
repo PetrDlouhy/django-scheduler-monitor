@@ -670,7 +670,8 @@ let loadingOlder=false, noMoreOlder=false, lastLiveLoad=0;
 function onRangeChanged(){
   updateTiles();
   const w=timeline.getWindow();
-  if(w.start.getTime() <= DATA.minTime + 60*60*1000) loadOlder();   // near the left edge → older
+  // near the left edge → load older, then scroll to reveal it (infinite-scroll)
+  if(w.start.getTime() <= DATA.minTime + 60*60*1000) loadOlder(true);
   // near the right edge while our newest run is already stale → pull current data
   if(w.end.getTime() >= Date.now()-60*1000 && Date.now()-DATA.maxTime > 5*60*1000){
     const now=Date.now();
@@ -698,7 +699,9 @@ function mergeSlowQ(base, extra){
   return [...m.values()];
 }
 
-function loadOlder(){
+// reveal=true: after loading, scroll left to show the just-loaded older data
+// (so hitting the left edge feels like continuous back-scrolling, not a wall).
+function loadOlder(reveal){
   if(loadingOlder||noMoreOlder) return;
   loadingOlder=true; setStatus("Loading older…");
   const before=new Date(DATA.minTime).toISOString();
@@ -708,8 +711,13 @@ function loadOlder(){
     const runs=mergeRuns(DATA.runs, res.runs||[]);
     if(runs.length===nBefore){ noMoreOlder=true; setStatus("No older data available"); loadingOlder=false; return; }
     applyData({...DATA, runs, slow_queries:mergeSlowQ(DATA.slow_queries||[], res.slow_queries||[])});
-    buildChips(); render();                          // keep window
-    timeline.setWindow(w.start,w.end,{animation:false});
+    buildChips(); render();
+    // shift left by half a window so the new chunk is visible; the half-shift
+    // keeps the new left edge clear of the (now 3-day-older) minTime, so this
+    // setWindow's own rangechanged doesn't immediately re-trigger a load.
+    const shift=reveal ? (w.end.getTime()-w.start.getTime())/2 : 0;
+    timeline.setWindow(new Date(w.start.getTime()-shift),
+                       new Date(w.end.getTime()-shift), {animation:false});
     setStatus("Loaded "+(runs.length-nBefore)+" older runs (back to "+new Date(DATA.minTime).toLocaleDateString()+")");
     loadingOlder=false;
   }).catch(e=>{ loadingOlder=false; if(!(e instanceof AuthError)) setStatus("Load error"); });
