@@ -28,6 +28,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
+    "middleware.DemoAutoLoginMiddleware",  # example-only: keep the demo user signed in
 ]
 
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3",

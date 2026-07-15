@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import datetime, timedelta
+from functools import wraps
 
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
@@ -16,12 +17,31 @@ RANGE_RE = re.compile(r"^\d{1,3}[mhd]$")  # relative Axiom ranges we accept from
 DYNO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 
 
+def staff_api_required(view):
+    """Like ``staff_member_required`` but for XHR endpoints: return a JSON 403
+    instead of a 302 to the HTML admin-login page. A redirect-to-HTML makes the
+    dashboard's ``fetch(...).then(r => r.json())`` calls choke on ``<!DOCTYPE``
+    (surfacing as a cryptic "failed to load" when a staff session simply
+    expired); a 403 lets the client show a clear "log in again" prompt."""
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        user = request.user
+        if not (user.is_authenticated and user.is_staff):
+            return JsonResponse(
+                {"ok": False, "error": "auth", "detail": "staff login required"},
+                status=403)
+        return view(request, *args, **kwargs)
+
+    return wrapped
+
+
 @staff_member_required
 def dashboard(request):
     return render(request, "scheduler_monitor/dashboard.html", {"conf": get_conf()})
 
 
-@staff_member_required
+@staff_api_required
 def api_data(request):
     """The current dataset (runs + slow queries) for the configured lookback.
 
@@ -43,7 +63,7 @@ def api_data(request):
     return JsonResponse({"ok": True, **data})
 
 
-@staff_member_required
+@staff_api_required
 def api_older(request):
     """An older history chunk ending at ?before= (ISO). The client merges it
     into its in-memory dataset, so the server stays stateless.
@@ -73,7 +93,7 @@ def api_older(request):
     return JsonResponse({"ok": True, "source": "axiom", **data})
 
 
-@staff_member_required
+@staff_api_required
 def api_output(request):
     """Full stdout/stderr of one run, fetched on demand."""
     conf = get_conf()
@@ -91,7 +111,7 @@ def api_output(request):
                          "count": len(lines)})
 
 
-@staff_member_required
+@staff_api_required
 @require_http_methods(["GET", "POST"])
 def api_merges(request):
     """Manual lane merge/split overrides, stored in the LaneOverride model."""

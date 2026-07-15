@@ -155,6 +155,12 @@
 </style>
 </head>
 <body>
+<div id="authbanner" style="display:none;align-items:center;gap:12px;justify-content:center;
+     padding:10px;background:var(--fail);color:#fff;font-weight:600">
+  Your staff session expired — please log in again to load data.
+  <a href="" onclick="location.reload();return false;"
+     style="color:#fff;text-decoration:underline">Reload</a>
+</div>
 <header>
   <h1>⏱ Scheduler Monitor{% if conf.DEMO %} <span style="color:var(--timeout);font-weight:400">· demo data</span>{% endif %}</h1>
   <button id="refresh" class="btn">⟳ Refresh</button>
@@ -255,6 +261,22 @@ function downscaleTarget(r){
   return null;
 }
 let DATA=null, timeline=null, itemRun={};
+
+// All API calls go through this: on a 403 (expired/lost staff session) the
+// server returns JSON, not an HTML login redirect, so we can show a clear
+// prompt instead of a mystery "failed to load".
+class AuthError extends Error {}
+function apiJson(url, opts){
+  return fetch(url, opts).then(res=>{
+    if(res.status===403){ authFail(); throw new AuthError("auth"); }
+    return res.json();
+  });
+}
+function authFail(){
+  const b=document.getElementById("authbanner");
+  if(b) b.style.display="flex";
+}
+
 const activeOutcome = new Set(OUTCOMES.map(o=>o[0]));
 const activeCadence = new Set();
 const activeSource = new Set();
@@ -262,16 +284,16 @@ const activeSource = new Set();
 // manual lane overrides on top of the numeric-normalized group_label heuristic
 let MERGES={merges:[], splits:[], map:{}};
 function loadMerges(){
-  return fetch(CFG.api.merges).then(r=>r.json()).then(d=>{
+  return apiJson(CFG.api.merges).then(d=>{
     MERGES={merges:d.merges||[], splits:d.splits||[], map:{}};
     MERGES.merges.forEach(g=>g.members.forEach(m=>MERGES.map[m]=g.name));
-  }).catch(()=>{});
+  }).catch(e=>{ if(!(e instanceof AuthError)) throw e; });
 }
 function saveMerges(){
-  return fetch(CFG.api.merges,{method:"POST",
+  return apiJson(CFG.api.merges,{method:"POST",
     headers:{"Content-Type":"application/json","X-CSRFToken":CFG.csrf},
     body:JSON.stringify({merges:MERGES.merges, splits:MERGES.splits})})
-    .then(r=>r.json()).then(()=>loadMerges());
+    .then(()=>loadMerges());
 }
 // lane identity: manual merge > manual split (exact args) > numeric-normalized group
 function effectiveLane(r){
@@ -464,12 +486,13 @@ function showStream(r){
   if(r.__outLines){ openStream(r, r.__outLines, r.__outTrunc); return; }
   const btn=document.querySelector(".outbtn"); btn.disabled=true; const old=btn.textContent; btn.textContent="Loading…";
   const p=new URLSearchParams({dyno:r.dyno, start:r.start, end:r.end||new Date().toISOString()});
-  fetch(CFG.api.output+"?"+p).then(x=>x.json()).then(res=>{
+  apiJson(CFG.api.output+"?"+p).then(res=>{
     btn.disabled=false; btn.textContent=old;
     if(!res.ok){ alert("Output error: "+res.error); return; }
     r.__outLines=res.lines; r.__outTrunc=res.truncated;
     openStream(r, res.lines, res.truncated);
-  }).catch(()=>{ btn.disabled=false; btn.textContent=old; alert("Failed to load output"); });
+  }).catch(e=>{ btn.disabled=false; btn.textContent=old;
+    if(!(e instanceof AuthError)) alert("Failed to load output"); });
 }
 // mark a list item's time (or a query's duration) on the charts
 let selMark=null;   // the clicked (locked) item's {off,dur}, restored when the mouse leaves
@@ -602,12 +625,18 @@ function render(mode){   // mode 'recent' resets the window to the last 24h; els
           content:`<span title="${esc(k)}">${esc(jk)}${rest?` <span class="args">${esc(rest)}</span>`:""}`
                  +(n>1?` <span class="args">(${n})</span>`:"")+`</span>`};})
     : [{id:1,content:"",order:0}];
-  const recentStart=new Date(DATA.maxTime-24*3600*1000), recentEnd=new Date(DATA.maxTime+60000);
+  const nowMs=Date.now();
+  // let the user always reach "now" (last run may be hours old) and zoom out to
+  // the whole loaded span; panning to either edge triggers a live/older load.
+  const rightEdge=Math.max(DATA.maxTime, nowMs)+3600000;
+  const span=rightEdge-DATA.minTime;
+  const recentStart=new Date(Math.max(DATA.maxTime, nowMs)-24*3600*1000);
+  const recentEnd=new Date(Math.max(DATA.maxTime, nowMs)+60000);
   const opts={
     stack:true, stackSubgroups:true, orientation:"top",
     groupOrder:(a,b)=>(a.order||0)-(b.order||0),
-    zoomMin:1000*60, zoomMax:14*24*3600*1000,
-    min:new Date(DATA.minTime-3600000), max:new Date(DATA.maxTime+3600000),
+    zoomMin:1000*60, zoomMax:Math.max(14*24*3600*1000, span+2*24*3600*1000),
+    min:new Date(DATA.minTime-3600000), max:new Date(rightEdge),
     margin:{item:2,axis:4}, tooltip:{followMouse:true,overflowMethod:"flip"},
     selectable:true,
   };
@@ -637,11 +666,18 @@ function render(mode){   // mode 'recent' resets the window to the last 24h; els
   updateTiles();
 }
 
-let loadingOlder=false, noMoreOlder=false;
+let loadingOlder=false, noMoreOlder=false, lastLiveLoad=0;
 function onRangeChanged(){
   updateTiles();
   const w=timeline.getWindow();
-  if(w.start.getTime() <= DATA.minTime + 60*60*1000) loadOlder();  // panned near the left edge
+  if(w.start.getTime() <= DATA.minTime + 60*60*1000) loadOlder();   // near the left edge → older
+  // near the right edge while our newest run is already stale → pull current data
+  if(w.end.getTime() >= Date.now()-60*1000 && Date.now()-DATA.maxTime > 5*60*1000){
+    const now=Date.now();
+    if(now-lastLiveLoad > 30*1000 && !document.getElementById("refresh").disabled){
+      lastLiveLoad=now; refreshData();
+    }
+  }
 }
 function setStatus(msg){ document.getElementById("status").textContent=msg||""; }
 
@@ -666,7 +702,7 @@ function loadOlder(){
   if(loadingOlder||noMoreOlder) return;
   loadingOlder=true; setStatus("Loading older…");
   const before=new Date(DATA.minTime).toISOString();
-  fetch(CFG.api.older+"?before="+encodeURIComponent(before)).then(r=>r.json()).then(res=>{
+  apiJson(CFG.api.older+"?before="+encodeURIComponent(before)).then(res=>{
     if(!res.ok){ setStatus("Load error: "+res.error); loadingOlder=false; return; }
     const w=timeline.getWindow(), nBefore=DATA.runs.length;
     const runs=mergeRuns(DATA.runs, res.runs||[]);
@@ -676,22 +712,26 @@ function loadOlder(){
     timeline.setWindow(w.start,w.end,{animation:false});
     setStatus("Loaded "+(runs.length-nBefore)+" older runs (back to "+new Date(DATA.minTime).toLocaleDateString()+")");
     loadingOlder=false;
-  }).catch(()=>{ setStatus("Load error"); loadingOlder=false; });
+  }).catch(e=>{ loadingOlder=false; if(!(e instanceof AuthError)) setStatus("Load error"); });
 }
 
 function refreshData(){
   const btn=document.getElementById("refresh"); btn.disabled=true;
   setStatus("Refreshing…");
-  fetch(CFG.api.data+"?force=1").then(r=>r.json()).then(d=>{
+  apiJson(CFG.api.data+"?force=1").then(d=>{
     if(!d.ok){ setStatus("Refresh error: "+d.error); btn.disabled=false; return; }
-    const w=timeline&&timeline.getWindow();          // keep the user's current view
+    const w=timeline&&timeline.getWindow();
+    // "live-follow": if the user is watching the live edge, snap the window to
+    // the newly-fetched present so fresh runs are visible; if they've panned
+    // into the past, leave their view where it is.
+    const atLiveEdge = w && DATA && w.end.getTime() >= DATA.maxTime - 5*60*1000;
     noMoreOlder=false;
     d.runs=mergeRuns(DATA?DATA.runs:[], d.runs||[]); // keep already-loaded older history
     d.slow_queries=mergeSlowQ(DATA?(DATA.slow_queries||[]):[], d.slow_queries||[]);
-    applyData(d); buildChips(); render();
-    if(w) timeline.setWindow(w.start,w.end,{animation:false});
+    applyData(d); buildChips(); render(atLiveEdge?"recent":undefined);
+    if(w && !atLiveEdge) timeline.setWindow(w.start,w.end,{animation:false});
     setStatus("Refreshed "+new Date(d.generated_at).toLocaleTimeString()); btn.disabled=false;
-  }).catch(()=>{ setStatus("Refresh error"); btn.disabled=false; });
+  }).catch(e=>{ btn.disabled=false; if(!(e instanceof AuthError)) setStatus("Refresh error"); });
 }
 
 function chipRow(containerId, values, active, colorFor){
@@ -823,11 +863,11 @@ function applyData(d){
 }
 
 Promise.all([
-  fetch(CFG.api.data).then(r=>r.json()),
+  apiJson(CFG.api.data),
   loadMerges(),
 ]).then(([d])=>{
   applyData(d); wireOnce(); buildChips(); render();
-});
+}).catch(e=>{ if(!(e instanceof AuthError)) throw e; });
 </script>
 </body>
 </html>

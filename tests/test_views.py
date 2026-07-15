@@ -20,6 +20,23 @@ def test_anonymous_is_redirected_to_login(client, db):
     assert "login" in resp["Location"]
 
 
+@pytest.mark.parametrize("name", ["api_data", "api_older", "api_output", "api_merges"])
+def test_api_endpoints_return_json_403_when_not_staff(client, db, name):
+    # not a redirect-to-HTML — the dashboard's fetch().json() would choke on
+    # "<!DOCTYPE" and show a mystery error; a JSON 403 lets it prompt re-login.
+    resp = client.get(reverse(f"scheduler_monitor:{name}"))
+    assert resp.status_code == 403
+    assert resp["Content-Type"] == "application/json"
+    assert resp.json() == {"ok": False, "error": "auth", "detail": "staff login required"}
+
+
+def test_api_forbidden_for_authenticated_non_staff(client, db):
+    User.objects.create_user("plain", password="x", is_staff=False)
+    client.login(username="plain", password="x")
+    resp = client.get(reverse("scheduler_monitor:api_data"))
+    assert resp.status_code == 403
+
+
 def test_dashboard_renders(staff_client):
     resp = staff_client.get(reverse("scheduler_monitor:dashboard"))
     assert resp.status_code == 200
