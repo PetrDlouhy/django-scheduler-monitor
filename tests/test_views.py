@@ -37,6 +37,45 @@ def test_api_forbidden_for_authenticated_non_staff(client, db):
     assert resp.status_code == 403
 
 
+@pytest.mark.parametrize("name", ["dashboard", "api_data", "api_output", "api_merges"])
+def test_responses_are_never_cached(staff_client, name):
+    # log data must not be cached by a browser or a shared CDN
+    resp = staff_client.get(reverse(f"scheduler_monitor:{name}"))
+    assert "no-store" in resp["Cache-Control"]
+
+
+def test_require_verified_denies_unverified_staff(staff_client, settings):
+    # a plain staff user has no is_verified() -> denied when 2FA is required
+    settings.SCHEDULER_MONITOR = {"DEMO": True, "REQUIRE_VERIFIED": True}
+    api = staff_client.get(reverse("scheduler_monitor:api_data"))
+    assert api.status_code == 403
+    assert api.json()["error"] == "2fa"
+    page = staff_client.get(reverse("scheduler_monitor:dashboard"))
+    assert page.status_code == 302 and "login" in page["Location"]
+
+
+def test_verified_helper(db, settings):
+    from unittest import mock
+
+    from scheduler_monitor.views import _verified
+
+    settings.SCHEDULER_MONITOR = {"REQUIRE_VERIFIED": True}
+    verified = mock.Mock(user=mock.Mock(is_verified=mock.Mock(return_value=True)))
+    unverified = mock.Mock(user=mock.Mock(is_verified=mock.Mock(return_value=False)))
+    no_otp = mock.Mock(user=mock.Mock(spec=[]))  # no is_verified attr (no django-otp)
+    assert _verified(verified) is True
+    assert _verified(unverified) is False
+    assert _verified(no_otp) is False
+    # when the requirement is off, everyone passes regardless of is_verified
+    settings.SCHEDULER_MONITOR = {"REQUIRE_VERIFIED": False}
+    assert _verified(unverified) is True
+
+
+def test_require_verified_off_by_default(staff_client):
+    resp = staff_client.get(reverse("scheduler_monitor:api_data"))
+    assert resp.status_code == 200  # default config: staff-only, no 2FA needed
+
+
 def test_dashboard_renders(staff_client):
     resp = staff_client.get(reverse("scheduler_monitor:dashboard"))
     assert resp.status_code == 200

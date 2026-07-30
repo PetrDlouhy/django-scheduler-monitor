@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.2.0
+
+- Hardening: every response now carries `Cache-Control: no-store`, so the
+  production log data it serves is never cached by a browser or a shared CDN.
+- New `REQUIRE_VERIFIED` setting (default `False`): when enabled, access also
+  requires a 2FA-verified session (django-otp's `request.user.is_verified()`),
+  on top of staff status. Degrades to staff-only when django-otp isn't present.
+
+## 0.1.0
 
 Initial release, extracted from an internal BlenderKit prototype:
 

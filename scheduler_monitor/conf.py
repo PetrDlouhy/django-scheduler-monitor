@@ -32,6 +32,10 @@ DEFAULTS = {
     "OLDER_CHUNK_DAYS": 3,
     "CACHE_SECONDS": 60,
     "DEMO": False,
+    # When True, additionally require a verified 2FA session (django-otp's
+    # request.user.is_verified()) on top of staff status. Safe to leave False
+    # if the host app has no django-otp; the check degrades to staff-only.
+    "REQUIRE_VERIFIED": False,
 }
 
 

@@ -130,7 +130,9 @@ from the drain (so they age out with its retention).
 
 > **Security note:** the Axiom token grants read access to *all* logs in the
 > dataset (which typically include emails, IPs, SQL). It is only ever used
-> server-side, and every view is staff-gated — keep it that way.
+> server-side, and every view is staff-gated — keep it that way. All responses
+> are sent `Cache-Control: no-store` so no browser or CDN caches the log data;
+> set `REQUIRE_VERIFIED: True` to additionally demand a 2FA-verified session.
 
 ## Try it in 60 seconds (no Heroku, no Axiom)
 
@@ -158,6 +160,7 @@ python manage.py runserver
 | `SERIES_LOOKBACK` | `"36h"` | window for memory/load samples and slow SQL (heavier queries) |
 | `OLDER_CHUNK_DAYS` | `3` | how much more history each pan-left loads |
 | `CACHE_SECONDS` | `60` | Django-cache TTL for the dataset (Refresh bypasses it) |
+| `REQUIRE_VERIFIED` | `False` | also require a verified 2FA session (django-otp `is_verified()`) on top of staff status |
 | `DEMO` | `False` | serve generated demo data instead of querying Axiom |
 
 ## Notable honesty details

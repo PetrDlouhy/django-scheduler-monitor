@@ -4,9 +4,12 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.views import redirect_to_login
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.utils.cache import add_never_cache_headers
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_http_methods
 
 from . import core, demo
@@ -17,27 +20,50 @@ RANGE_RE = re.compile(r"^\d{1,3}[mhd]$")  # relative Axiom ranges we accept from
 DYNO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 
 
+def _verified(request) -> bool:
+    """True unless REQUIRE_VERIFIED is set and the user has *not* completed 2FA
+    this session. Uses django-otp's ``request.user.is_verified()`` when present
+    (via getattr, so the check degrades to staff-only without django-otp)."""
+    if not get_conf().get("REQUIRE_VERIFIED"):
+        return True
+    is_verified = getattr(request.user, "is_verified", None)
+    return bool(callable(is_verified) and is_verified())
+
+
 def staff_api_required(view):
     """Like ``staff_member_required`` but for XHR endpoints: return a JSON 403
     instead of a 302 to the HTML admin-login page. A redirect-to-HTML makes the
     dashboard's ``fetch(...).then(r => r.json())`` calls choke on ``<!DOCTYPE``
     (surfacing as a cryptic "failed to load" when a staff session simply
-    expired); a 403 lets the client show a clear "log in again" prompt."""
+    expired); a 403 lets the client show a clear "log in again" prompt.
+
+    Also stamps ``Cache-Control: no-store`` on every response — these carry
+    production log data and must never be cached by a browser or shared CDN."""
 
     @wraps(view)
     def wrapped(request, *args, **kwargs):
         user = request.user
         if not (user.is_authenticated and user.is_staff):
-            return JsonResponse(
+            resp = JsonResponse(
                 {"ok": False, "error": "auth", "detail": "staff login required"},
                 status=403)
-        return view(request, *args, **kwargs)
+        elif not _verified(request):
+            resp = JsonResponse(
+                {"ok": False, "error": "2fa", "detail": "verified (2FA) session required"},
+                status=403)
+        else:
+            resp = view(request, *args, **kwargs)
+        add_never_cache_headers(resp)
+        return resp
 
     return wrapped
 
 
+@never_cache
 @staff_member_required
 def dashboard(request):
+    if not _verified(request):
+        return redirect_to_login(request.get_full_path())
     return render(request, "scheduler_monitor/dashboard.html", {"conf": get_conf()})
 
 
