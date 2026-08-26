@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Chained (`&&`) commands are labeled by every segment: label rules apply per
+  segment (one matching segment no longer swallows the whole chain), repeated
+  segment names collapse, and args are dropped for a stable lane name.
+  Previously such a run was named by whichever rule or first `manage.py`
+  subcommand matched the combined string, hiding the other jobs in the chain.
+
 ## 0.2.0
 
 - Hardening: every response now carries `Cache-Control: no-store`, so the
