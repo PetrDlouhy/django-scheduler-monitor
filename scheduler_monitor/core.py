@@ -151,6 +151,13 @@ def job_key(command: str, label_rules=None) -> tuple[str, str]:
     cmd = command.strip()
     if cmd.startswith("("):  # placeholder for a run whose command wasn't logged
         return cmd, ""
+    if " && " in cmd:
+        # Chained commands: name every segment so the label shows what the run
+        # actually does. Rules apply per segment — a rule matching one segment
+        # must not swallow the whole chain. Repeated segment names collapse
+        # (e.g. two cache-warm curls); args are dropped for a stable lane name.
+        names = [job_key(seg, label_rules)[0] for seg in cmd.split(" && ")]
+        return " && ".join(dict.fromkeys(n for n in names if n)), ""
     for pattern, label in label_rules or []:
         if re.search(pattern, cmd):
             return label, ""
