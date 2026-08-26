@@ -32,6 +32,20 @@ class TestJobKey:
     def test_plain_command_uses_first_token(self):
         assert core.job_key("bash")[0] == "bash"
 
+    def test_chained_commands_name_every_segment(self):
+        cmd = ("poetry run python manage.py update_contacts && "
+               "poetry run python manage.py sendgrid_unsubscribe_users && "
+               "poetry run python manage.py assign_guessed_countries 7")
+        assert core.job_key(cmd) == (
+            "update_contacts && sendgrid_unsubscribe_users && assign_guessed_countries", "")
+
+    def test_chained_commands_apply_label_rules_per_segment(self):
+        cmd = ('poetry run python manage.py clean_timed_caches && '
+               'curl -sf -o /dev/null "https://x/a?renew_cache=1" && '
+               'curl -sf -o /dev/null "https://x/b?renew_cache=1"')
+        assert core.job_key(cmd, [(r"^curl\b", "curl: cache warm")]) == (
+            "clean_timed_caches && curl: cache warm", "")
+
 
 class TestClassify:
     def test_exit_codes(self):
