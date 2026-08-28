@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "django-scheduler-monitor"
-version = "0.3.0"
+version = "0.3.1"
 description = "Heroku one-off dyno (Scheduler / Advanced Scheduler / manual run) monitoring dashboard for Django, powered by your existing log drain."
 readme = "README.md"
 license = { file = "LICENSE" }

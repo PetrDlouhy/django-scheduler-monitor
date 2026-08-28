@@ -113,6 +113,14 @@ class Run(models.Model):
         fields["end"] = parse_ts(r["end"]) if r.get("end") else None
         fields["args"] = fields["args"] or ""
         fields["cadence"] = fields["cadence"] or ""
+        # Labels are derived from log-drain command lines, which can be
+        # arbitrarily long (base64-wrapped one-off shell scripts routinely
+        # exceed 2000 chars); clamp every sized field to its column so one
+        # oversized run cannot make the row unstorable.
+        for field in cls._meta.get_fields():
+            max_length = getattr(field, "max_length", None)
+            if max_length and isinstance(fields.get(field.name), str):
+                fields[field.name] = fields[field.name][:max_length]
         _, created = cls.objects.update_or_create(
             dyno=r["dyno"], start=parse_ts(r["start"]), defaults=fields)
         return created
