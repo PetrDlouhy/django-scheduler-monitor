@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+- `sync_scheduler_runs` survives unstorable runs: each row is upserted
+  individually, failures are logged with full tracebacks and summarised on
+  stderr instead of aborting the whole sync. (A single one-off dyno with a
+  ~2000-char base64-wrapped shell command produced a label past
+  `varchar(500)`; the resulting `DataError` killed every sync and the
+  dashboard recorded nothing for days.)
+- `Run.upsert_from_dict` clamps every sized field to its column's
+  `max_length`, so oversized log-derived labels store truncated instead of
+  failing. `command` is a TextField and keeps the full command line.
+
 ## 0.3.0
 
 - Chained (`&&`) commands are labeled by every segment: label rules apply per

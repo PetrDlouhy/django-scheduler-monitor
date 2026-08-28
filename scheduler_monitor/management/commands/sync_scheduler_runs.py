@@ -1,8 +1,13 @@
+import logging
+
 from django.core.management.base import BaseCommand
 
 from scheduler_monitor import core, demo
 from scheduler_monitor.conf import get_conf
 from scheduler_monitor.models import Run
+
+
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -28,9 +33,29 @@ class Command(BaseCommand):
         else:
             data = core.build_dataset(f"now-{options['lookback']}", "now",
                                       f"now-{options['series']}", "now")
-        created = sum(Run.upsert_from_dict(r) for r in data["runs"])
+        created = 0
+        stored = 0
+        failed = []
+        for r in data["runs"]:
+            # One unstorable run must never abort the whole sync: a single
+            # poison row once blinded the dashboard for days because every
+            # retry died on it. Store everything storable, report the rest.
+            try:
+                created += Run.upsert_from_dict(r)
+            except Exception:
+                logger.exception(
+                    "sync_scheduler_runs: could not store run %r (%s)",
+                    r.get("dyno"), (r.get("command") or "")[:120],
+                )
+                failed.append(r.get("dyno", "?"))
+            else:
+                stored += 1
         stale = Run.close_stale()
         self.stdout.write(self.style.SUCCESS(
-            f"synced {len(data['runs'])} runs ({created} new, "
-            f"{len(data['runs']) - created} updated, {stale} stale closed); "
+            f"synced {stored} runs ({created} new, "
+            f"{stored - created} updated, {stale} stale closed); "
             f"table now holds {Run.objects.count()}"))
+        if failed:
+            self.stderr.write(self.style.ERROR(
+                f"failed to store {len(failed)} runs "
+                f"(see log for tracebacks): {', '.join(failed[:10])}"))

@@ -144,3 +144,59 @@ def test_merge_overrides_survive_roundtrip_with_runs(staff_client):
                       json.dumps({"merges": [], "splits": ["nightly_rollup --days N"]}),
                       content_type="application/json")
     assert Run.objects.count() == n
+
+
+def _run_dict(**overrides):
+    base = {"dyno": "run.1234", "start": "2026-08-25T10:50:00+00:00", "end": None,
+            "source": "API/manual", "command": "python manage.py x", "job_key": "x",
+            "job_label": "x", "group_label": "x", "args": "", "duration_s": None,
+            "exit_status": None, "outcome": "running", "stopped": False,
+            "cycled": False, "peak_rss_mb": None, "quota_mb": None, "mem_pct": None,
+            "peak_load": None, "dyno_size": None, "cadence": "",
+            "mem_series": None, "load_series": None}
+    base.update(overrides)
+    return base
+
+
+def test_oversized_labels_are_clamped_to_column_size(db):
+    # Regression: a ~2000-char base64-wrapped one-off shell command produced
+    # job_label/group_label past varchar(500); the resulting DataError aborted
+    # every sync and the dashboard recorded nothing for days.
+    long_command = "python manage.py shell -c \"exec(base64.b64decode('%s'))\"" % (
+        "Q" * 2000,
+    )
+    r = _run_dict(command=long_command, job_key=long_command[:1000],
+                  job_label=long_command, group_label=long_command,
+                  args=long_command)
+    assert Run.upsert_from_dict(r) is True
+
+    run = Run.objects.get()
+    assert len(run.job_label) == 500
+    assert len(run.group_label) == 500
+    assert len(run.job_key) == 255
+    assert run.command == long_command  # TextField keeps the full command
+
+
+def test_sync_stores_the_rest_when_one_run_is_unstorable(db, monkeypatch, capsys):
+    # One poison row must not abort the batch.
+    good1 = _run_dict(dyno="scheduler.1")
+    poison = _run_dict(dyno="run.666", start="not a timestamp at all")
+    good2 = _run_dict(dyno="scheduler.2")
+
+    from scheduler_monitor.management.commands import sync_scheduler_runs as cmd_mod
+
+    conf = dict(cmd_mod.get_conf(), DEMO=False)
+    monkeypatch.setattr(cmd_mod, "get_conf", lambda: conf)
+    monkeypatch.setattr(
+        cmd_mod.core, "build_dataset",
+        lambda *a, **kw: {"runs": [good1, poison, good2]},
+    )
+
+    call_command("sync_scheduler_runs")
+
+    assert set(Run.objects.values_list("dyno", flat=True)) == {
+        "scheduler.1", "scheduler.2",
+    }
+    err = capsys.readouterr().err
+    assert "failed to store 1 runs" in err
+    assert "run.666" in err
