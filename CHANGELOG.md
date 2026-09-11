@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+- A `Cycling` + SIGTERM stop on a one-off dyno is classified `timed_out`, no
+  longer treated as Heroku's harmless 24h dyno cycle. One-off dynos are never
+  auto-cycled; the line is what Heroku logs when Advanced Scheduler stops a
+  dyno at its trigger timeout (and at the 24h one-off limit). Until now such a
+  run stayed `success` whenever the exit line said 0 (`poetry run` exits 0 once
+  its child is gone) or landed after "complete" and was dropped, so two
+  consecutive 4-hour kills of a nightly report job showed green on the
+  dashboard while its email never went out. A bare SIGTERM without `Cycling`
+  is still `stopped`.
+
 ## 0.3.1
 
 - `sync_scheduler_runs` survives unstorable runs: each row is upserted

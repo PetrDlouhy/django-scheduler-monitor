@@ -479,11 +479,20 @@ def mark_24h_kills(runs: list[dict]):
 
 def mark_stopped(runs: list[dict]):
     """A dyno told to stop ("Stopping all processes with SIGTERM") did not finish
-    on its own — e.g. `heroku ps:stop` or a deploy restart — even if it then
-    exited 0. Flag it as `stopped`, distinct from success. Excludes the Heroku
-    24h auto-cycle, which pairs SIGTERM with a `Cycling` line."""
+    on its own, even if it then exited 0 (`poetry run` does, once its child is
+    gone). Two flavours, both distinct from success:
+
+    * `Cycling` + SIGTERM is a platform deadline. A one-off dyno is never
+      auto-cycled the way web/worker dynos are; the line appears when Advanced
+      Scheduler stops the dyno at its trigger timeout (and at Heroku's 24h
+      one-off limit). That is `timed_out` — whatever exit status follows, and
+      even when the exit line is dropped or lands after "complete".
+    * a bare SIGTERM is a stop by hand or by a deploy restart — `stopped`.
+    """
     for r in runs:
-        if r.get("stopped") and not r.get("cycled"):
+        if r.get("cycled"):
+            r["outcome"] = "timed_out"
+        elif r.get("stopped"):
             r["outcome"] = "stopped"
 
 

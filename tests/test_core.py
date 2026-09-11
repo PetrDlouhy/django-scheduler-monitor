@@ -133,16 +133,46 @@ class TestBuildRuns:
         core.mark_stopped(runs)
         assert runs[0]["outcome"] == "stopped"
 
-    def test_cycling_sigterm_is_not_marked_stopped(self):
+    def test_cycling_kill_is_a_timeout_even_when_the_process_exits_0(self):
+        # Advanced Scheduler enforces its trigger timeout by stopping the dyno,
+        # which Heroku logs as "Cycling" + SIGTERM. check_assets, 2026-09-09:
+        # killed at 4h03m, `poetry run` exited 0 - the dashboard showed success.
+        runs = core.build_runs([
+            start_line(0, "advanced-scheduler.6650", "poetry run python manage.py check_assets"),
+            line(1, "advanced-scheduler.6650", "State changed from starting to up"),
+            line(14590, "advanced-scheduler.6650", "Cycling"),
+            line(14590, "advanced-scheduler.6650", "State changed from up to complete"),
+            line(14591, "advanced-scheduler.6650", "Stopping all processes with SIGTERM"),
+            line(14594, "advanced-scheduler.6650", "Process exited with status 0"),
+        ])
+        core.mark_stopped(runs)
+        assert runs[0]["cycled"] is True
+        assert runs[0]["outcome"] == "timed_out"
+
+    def test_cycling_kill_that_needed_sigkill_is_a_timeout(self):
+        # 2026-09-10: the process ignored SIGTERM for 30s (R12), Heroku SIGKILLed
+        # it; the 137 exit line lands after "complete", so classify() never sees it.
+        runs = core.build_runs([
+            start_line(0, "advanced-scheduler.6312", "poetry run python manage.py check_assets"),
+            line(1, "advanced-scheduler.6312", "State changed from starting to up"),
+            line(14456, "advanced-scheduler.6312", "Cycling"),
+            line(14456, "advanced-scheduler.6312", "State changed from up to complete"),
+            line(14457, "advanced-scheduler.6312", "Stopping all processes with SIGTERM"),
+            line(14487, "advanced-scheduler.6312", "Stopping remaining processes with SIGKILL"),
+            line(14487, "advanced-scheduler.6312", "Process exited with status 137"),
+        ])
+        core.mark_stopped(runs)
+        assert runs[0]["outcome"] == "timed_out"
+
+    def test_plain_sigterm_stop_is_still_a_stop_not_a_timeout(self):
         runs = core.build_runs([
             start_line(0, "scheduler.4", "python manage.py long_job"),
             line(1, "scheduler.4", "State changed from starting to up"),
-            line(90, "scheduler.4", "Cycling"),
+            line(90, "scheduler.4", "State changed from up to complete"),
             line(91, "scheduler.4", "Stopping all processes with SIGTERM"),
-            line(95, "scheduler.4", "State changed from up to complete"),
         ])
         core.mark_stopped(runs)
-        assert runs[0]["outcome"] != "stopped"
+        assert runs[0]["outcome"] == "stopped"
 
 
 class TestOutcomeFixups:
